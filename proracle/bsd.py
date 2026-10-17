@@ -20,8 +20,21 @@ API_BASE_URL = "https://sports.bzzoiro.com/api/v2/events/"
 MAX_PAGE_SIZE = 200
 _EVENT_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _ALLOWED_SOURCE_STATUSES = frozenset(
-    {"upcoming", "scheduled", "live", "finished", "cancelled", "postponed", "abandoned", "unresolved"}
+    {
+        "upcoming",
+        "scheduled",
+        "notstarted",
+        "live",
+        "finished",
+        "cancelled",
+        "postponed",
+        "abandoned",
+        "unresolved",
+    }
 )
+# The provider's own name for a not-yet-started match is "notstarted", observed on live responses.
+# The client's logical "upcoming" query maps to it; "upcoming" itself selects a different, larger set.
+_PROVIDER_QUERY_STATUS = {"upcoming": "notstarted", "finished": "finished"}
 
 
 class BSDSourceError(Exception):
@@ -160,6 +173,7 @@ def normalize_bsd_event(value: object) -> BSDMatch:
     fixture_status = {
         "upcoming": "SCHEDULED",
         "scheduled": "SCHEDULED",
+        "notstarted": "SCHEDULED",
         "live": "LIVE",
         "finished": "COMPLETED",
         "cancelled": "CANCELLED",
@@ -332,7 +346,7 @@ class BSDClient:
         for _page in range(self._max_pages):
             payload = self._get_page(
                 {
-                    "status": status,
+                    "status": _PROVIDER_QUERY_STATUS[status],
                     "date_from": start,
                     "date_to": end,
                     "limit": str(self._page_size),

@@ -64,6 +64,11 @@ class BSDEventNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized.fixture_status, "SCHEDULED")
         self.assertIsNone(normalized.actual_outcome)
 
+    def test_provider_notstarted_status_is_a_scheduled_fixture(self) -> None:
+        normalized = normalize_bsd_event(event(status="notstarted", home_score=None, away_score=None))
+        self.assertEqual(normalized.fixture_status, "SCHEDULED")
+        self.assertIsNone(normalized.actual_outcome)
+
     def test_draw_and_away_result_are_derived_from_regulation_score(self) -> None:
         self.assertEqual(normalize_bsd_event(event(home_score=1, away_score=1)).actual_outcome, "DRAW")
         self.assertEqual(normalize_bsd_event(event(home_score=0, away_score=2)).actual_outcome, "AWAY_WIN")
@@ -101,6 +106,13 @@ class BSDClientTests(unittest.TestCase):
             sleeper=lambda _seconds: None,
             **kwargs,
         )
+
+    def test_upcoming_query_asks_the_provider_for_notstarted(self) -> None:
+        transport = FakeTransport(json_response({"count": 1, "results": [event(status="notstarted", home_score=None, away_score=None)]}))
+        matches = self.client(transport).fetch_events("upcoming", "2030-01-01", "2030-01-02")
+        self.assertEqual([match.fixture_status for match in matches], ["SCHEDULED"])
+        self.assertIn("status=notstarted", transport.calls[0][0])
+        self.assertNotIn("status=upcoming", transport.calls[0][0])
 
     def test_paginates_with_bounded_v2_query_and_header_auth(self) -> None:
         transport = FakeTransport(
