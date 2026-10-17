@@ -1,0 +1,17 @@
+PRORACLE
+Copyright 2026 Mailu Mwau
+
+Licenses
+- Code is licensed under the Apache License, Version 2.0 (see LICENSE).
+- Original documentation, reports, and synthetic example data are licensed under Creative Commons Attribution 4.0 International (see LICENSE-DOCS.md).
+
+Authorship and AI assistance
+The code, tests, and documentation in this repository were written by the maintainer, Mailu Mwau, working with AI coding assistants (Anthropic Claude and OpenAI Codex). The assistants generated and edited portions of the material under the maintainer's direction, and the maintainer reviewed and accepted it.
+
+To the maintainer's knowledge and belief: no other person wrote this code; it was not copied from another project; and no employer or contract gives anyone else a claim on it. The maintainer offers it under the licenses above on that basis. Copyright protection for AI-generated material is uncertain or limited in some jurisdictions, so the licenses grant whatever rights the maintainer holds and make no stronger promise.
+
+Contributions
+Contributors keep the copyright in their own work and submit it under the same licenses, and only work they have the right to license may be submitted (see CONTRIBUTING.md).
+
+Third-party data
+This repository contains no provider data. Data from providers such as the BSD API is fetched by each operator with their own key and remains subject to that provider's terms. Nothing here grants any right to third-party data, trademarks, or logos.

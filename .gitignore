@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Local datasets and generated reports are private unless explicitly allowlisted.
+/data/*
+!/data/synthetic/
+/data/synthetic/*
+!/data/synthetic/*.jsonl
+/reports/*
+
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Supabase CLI state is local and may contain project-specific references.
+/supabase/.branches/
+/supabase/.temp/

@@ -1,0 +1,26 @@
+name: Share a field note
+description: Share a careful observation, including null or negative results
+title: "[Field note]: "
+labels: ["research", "field-note"]
+body:
+  - type: textarea
+    id: observation
+    attributes:
+      label: Observation
+      description: What did you observe, and where?
+    validations:
+      required: true
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Source and permission
+      description: State source, date, terms, attribution, and whether the material can be shared.
+    validations:
+      required: true
+  - type: textarea
+    id: limits
+    attributes:
+      label: Limits and reproduction
+      description: Include sample size, uncertainty, known limitations, and steps to reproduce using synthetic or cleared data.
+    validations:
+      required: true

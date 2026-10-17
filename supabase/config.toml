@@ -1,0 +1,12 @@
+# Minimal local Supabase CLI configuration for PRORACLE.
+# Other services use the CLI defaults unless the project needs an override.
+project_id = "proracle"
+
+[api]
+# PRORACLE is isolated from other projects that may share this database.
+schemas = ["public", "graphql_public", "proracle"]
+extra_search_path = ["public", "extensions"]
+
+[db]
+# Keep the local database aligned with the verified PostgreSQL 17 migration setup.
+major_version = 17

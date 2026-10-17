@@ -1,0 +1,6 @@
+{"fixture_id":"synthetic-test-001","prediction_at":"2026-02-01T10:00:00Z","kickoff_at":"2026-02-01T15:00:00Z","actual_outcome":"HOME_WIN","probabilities":{"HOME_WIN":0.70,"DRAW":0.20,"AWAY_WIN":0.10}}
+{"fixture_id":"synthetic-test-002","prediction_at":"2026-02-02T10:00:00Z","kickoff_at":"2026-02-02T15:00:00Z","actual_outcome":"DRAW","probabilities":{"HOME_WIN":0.25,"DRAW":0.50,"AWAY_WIN":0.25}}
+{"fixture_id":"synthetic-test-003","prediction_at":"2026-02-03T10:00:00Z","kickoff_at":"2026-02-03T15:00:00Z","actual_outcome":"AWAY_WIN","probabilities":{"HOME_WIN":0.20,"DRAW":0.30,"AWAY_WIN":0.50}}
+{"fixture_id":"synthetic-test-004","prediction_at":"2026-02-04T10:00:00Z","kickoff_at":"2026-02-04T15:00:00Z","actual_outcome":"HOME_WIN","probabilities":{"HOME_WIN":0.40,"DRAW":0.35,"AWAY_WIN":0.25}}
+{"fixture_id":"synthetic-test-005","prediction_at":"2026-02-05T10:00:00Z","kickoff_at":"2026-02-05T15:00:00Z","actual_outcome":"DRAW","probabilities":{"HOME_WIN":0.20,"DRAW":0.40,"AWAY_WIN":0.40}}
+{"fixture_id":"synthetic-test-006","prediction_at":"2026-02-06T10:00:00Z","kickoff_at":"2026-02-06T15:00:00Z","actual_outcome":"AWAY_WIN","probabilities":{"HOME_WIN":0.25,"DRAW":0.30,"AWAY_WIN":0.45}}

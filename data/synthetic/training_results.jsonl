@@ -1,0 +1,8 @@
+{"fixture_id":"synthetic-train-001","kickoff_at":"2026-01-05T15:00:00Z","available_at":"2026-01-05T18:00:00Z","actual_outcome":"HOME_WIN"}
+{"fixture_id":"synthetic-train-002","kickoff_at":"2026-01-10T15:00:00Z","available_at":"2026-01-10T18:00:00Z","actual_outcome":"HOME_WIN"}
+{"fixture_id":"synthetic-train-003","kickoff_at":"2026-01-15T15:00:00Z","available_at":"2026-01-15T18:00:00Z","actual_outcome":"HOME_WIN"}
+{"fixture_id":"synthetic-train-004","kickoff_at":"2026-01-20T15:00:00Z","available_at":"2026-01-20T18:00:00Z","actual_outcome":"HOME_WIN"}
+{"fixture_id":"synthetic-train-005","kickoff_at":"2026-01-25T15:00:00Z","available_at":"2026-01-25T18:00:00Z","actual_outcome":"DRAW"}
+{"fixture_id":"synthetic-train-006","kickoff_at":"2026-01-30T15:00:00Z","available_at":"2026-01-30T18:00:00Z","actual_outcome":"DRAW"}
+{"fixture_id":"synthetic-train-007","kickoff_at":"2026-01-31T15:00:00Z","available_at":"2026-01-31T18:00:00Z","actual_outcome":"AWAY_WIN"}
+{"fixture_id":"synthetic-train-008","kickoff_at":"2026-01-31T18:00:00Z","available_at":"2026-01-31T21:00:00Z","actual_outcome":"AWAY_WIN"}

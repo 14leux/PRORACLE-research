@@ -1,0 +1,22 @@
+# Maintainer ownership. A CODEOWNERS review is only enforced once branch rules require it;
+# see docs/MAINTAINING.md for the repository-settings checklist.
+
+# Default owner
+*                               @14leux
+
+# Anything that can run with elevated trust or change what is evaluated
+/.github/                       @14leux
+/supabase/                      @14leux
+/proracle/contracts.py          @14leux
+/proracle/evaluate.py           @14leux
+/proracle/retrospective.py      @14leux
+
+# Documents that make claims or set rules
+/docs/BASELINE.md               @14leux
+/docs/BETTING_ECONOMICS.md      @14leux
+/docs/EVALUATION_PROTOCOL.md    @14leux
+/docs/MAINTAINING.md            @14leux
+/SECURITY.md                    @14leux
+/LICENSE                        @14leux
+/LICENSE-DOCS.md                @14leux
+/NOTICE                         @14leux

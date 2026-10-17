@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned GitHub Actions current through reviewed pull requests.
+# The project has no package dependencies, so no package ecosystem is configured.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"

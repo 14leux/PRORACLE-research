@@ -1,0 +1,40 @@
+name: Research experiment
+description: Propose a measurable, reproducible prediction or data-quality experiment
+title: "[Research]: "
+labels: ["research"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question and hypothesis
+      description: What do you expect to change, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Baseline and candidate
+      description: What will you compare, using the same cohort?
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data source and rights
+      description: Identify the source, terms, attribution, date range, and permission to share any results.
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Evaluation method
+      description: Describe time split, sample size, metrics, uncertainty, and regression checks.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction plan
+      description: What code, configuration, and steps will let someone repeat this without private data or credentials?
+    validations:
+      required: true

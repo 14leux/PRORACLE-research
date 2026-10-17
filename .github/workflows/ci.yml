@@ -1,0 +1,79 @@
+# Unprivileged CI for pull requests and the default branch.
+#
+# Design rules (see docs/MAINTAINING.md):
+#   - triggers are only `pull_request` and `push`; never `pull_request_target` or `workflow_run`
+#   - the token is read-only and no repository or environment secrets are referenced
+#   - every third-party action is pinned to a full commit SHA (version in the comment)
+#   - nothing here deploys, publishes or touches a database or a provider
+#   - the runner image is pinned (ubuntu-24.04), so a platform migration cannot change CI silently
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Offline test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile check
+        run: python -m compileall -q proracle tests
+
+      - name: Synthetic demo
+        run: python -m proracle.demo > /dev/null
+
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install a pinned, checksum-verified Gitleaks
+        run: |
+          set -euo pipefail
+          VERSION=8.30.1
+          ARCHIVE="gitleaks_${VERSION}_linux_x64.tar.gz"
+          SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/$ARCHIVE" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/${ARCHIVE}"
+          echo "${SHA256}  $RUNNER_TEMP/$ARCHIVE" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/$ARCHIVE" -C "$RUNNER_TEMP" gitleaks
+
+      - name: Scan history and working tree
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner .
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner .
