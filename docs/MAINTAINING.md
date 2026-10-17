@@ -1,6 +1,6 @@
 # Maintaining PRORACLE
 
-This page is for maintainers. It records who reviews what, what CI may and may not do, how production is kept out of this repository, and the repository settings to apply and verify when the project is published. Nothing here has been applied to a public repository yet: while the repository is private, several of these settings cannot be configured.
+This page is for maintainers. It records who reviews what, what CI may and may not do, how production is kept out of this repository, and the repository settings to apply and verify when the project is published. The settings were applied when the repository was published; the checklist below records what is verified and what is still open.
 
 ## Ownership
 
@@ -52,17 +52,17 @@ Design of the private runtime (no code is shipped here):
 
 ## Repository settings checklist (apply and verify at publication)
 
-None of these is done. Items marked `[private repo: cannot]` could not be applied on 2026-10-10 because GitHub does not offer them for a private repository on the current plan.
+Applied on 2026-10-17, when the repository was published. Read each setting back from the repository's Settings page or API after any change; one item remains open, below.
 
-- [ ] Default branch protection: require a pull request, require the `tests` and `secret scan` checks, block force pushes and deletion. `[private repo: cannot]`
-- [ ] Require review from code owners for the paths in `.github/CODEOWNERS`. Note for a single maintainer: GitHub does not let an author approve their own pull request, so decide deliberately between requiring approval (with an administrator bypass you accept) and relying on required checks. `[private repo: cannot]`
-- [ ] Actions: set the default workflow token to read-only (it already is), disallow Actions from approving pull requests (already off), restrict allowed actions, and require SHA pinning.
-- [ ] Fork pull requests: require approval to run workflows from all outside contributors. `[private repo: cannot]`
-- [ ] Secret scanning and push protection on. `[private repo: cannot, availability depends on plan]`
-- [ ] Private vulnerability reporting on, so the contact in `SECURITY.md` has a second route.
-- [ ] Dependabot version updates on (`.github/dependabot.yml` is present).
-- [ ] Verify the anonymous view: license shown, default branch, no private identifiers, no private history.
-- [ ] Open a test pull request from a fork with no secrets and confirm the workflow runs with a read-only token and sees no secrets.
+- [x] Default branch protection (applied 2026-10-17 as a repository ruleset, no bypass actors): a pull request is required, the `tests (Python 3.11)`, `tests (Python 3.13)` and `secret scan` checks must pass, force pushes and deletion are blocked. No independent approval is required, so a merged pull request is not independent review.
+- [x] Code-owner review: deliberately not required. GitHub does not let an author approve their own pull request, and this is a single-maintainer project; `.github/CODEOWNERS` still requests the owner as reviewer.
+- [x] Actions (applied 2026-10-17): default workflow token read-only, Actions cannot approve pull requests, only GitHub-owned actions are allowed, and full-SHA pinning is required.
+- [x] Fork pull requests: approval is required to run workflows from all outside contributors (applied 2026-10-17).
+- [x] Secret scanning and push protection are on (applied 2026-10-17).
+- [x] Private vulnerability reporting is on (applied 2026-10-17), as a second route beside the address in `SECURITY.md`.
+- [x] Dependabot alerts and security updates are on, and `.github/dependabot.yml` keeps the pinned actions current.
+- [x] Anonymous view verified 2026-10-17: Apache-2.0 shown, default branch `main`, a single root commit with no inherited history, no private identifiers.
+- [ ] Open a test pull request from a fork with no secrets and confirm the workflow runs with a read-only token and sees no secrets. Not done: the maintainer has one GitHub account, so this needs a second account or a first outside contributor.
 
 ## Releases
 
