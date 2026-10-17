@@ -15,6 +15,6 @@
 
 ## Attribution and licensing
 
-PRORACLE code is intended to use Apache-2.0. Original project-authored explanatory documents and reports are intended to use CC BY 4.0. These licenses do not grant rights to third-party data, provider APIs, logos, or restricted derived outputs. Follow each source's attribution and usage terms. If rights are unclear, do not include the data; use a synthetic example and ask the provider or a qualified adviser.
+PRORACLE code is licensed under Apache-2.0. Original project-authored explanatory documents and reports are licensed under CC BY 4.0. These licenses do not grant rights to third-party data, provider APIs, logos, or restricted derived outputs. Follow each source's attribution and usage terms. If rights are unclear, do not include the data; use a synthetic example and ask the provider or a qualified adviser.
 
 Contributors are responsible for documenting the source and permission basis for any non-synthetic material they propose to share. Maintainers may ask for additional evidence or decline material whose rights cannot be established.
