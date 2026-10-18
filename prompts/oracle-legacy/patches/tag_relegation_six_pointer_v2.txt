@@ -1,0 +1,8 @@
+# ORACLE Prediction Patch — tag_relegation_six_pointer v2
+# Generated: 2026-07-23T00:00:00 EAT
+# Status: active
+# Supersedes: tag_relegation_six_pointer_v1 (retired 2026-07-23 — 32.5% accuracy
+# over 123 predictions, no measurable improvement over the tag's pre-patch
+# baseline; see IMPROVEMENTS.md IMP-037 investigation, 2026-07-23)
+---
+For relegation_six_pointer fixtures, before applying any relegation-battle reasoning, first verify the tag still describes reality at prediction time: (1) Check each team's current points gap to the relegation line — if either team is 6+ points clear of the drop zone with 3 or fewer matches remaining, treat this as a standard fixture, not a desperation battle, and reason accordingly. (2) Check for mathematical safety or confirmed relegation already secured/sealed since enrichment — a team that cannot be caught, or cannot catch up, is not playing a six-pointer regardless of its table position when the fixture was tagged. (3) Only if genuine two-way relegation stakes are confirmed, apply heightened weight to recent form (last 5), home/away split disparity, and points-gap intensity as in the original patch. (4) State explicitly whether you validated genuine stakes before reasoning as a relegation fixture, and if stakes have lapsed, predict as you would a standard-tag fixture instead.

@@ -1,0 +1,15 @@
+# ORACLE Prediction Patch — draw_signal v2
+# Generated: 2026-08-22T00:00:00 EAT (manual patch — DECISION 047)
+# Status: active
+# Supersedes: draw_signal_v1 (retired 2026-08-22 — its blanket below-40%-win-rate
+# trigger collided with relegation_six_pointer fixtures, where both teams scoring
+# below 40% win rate is a structural property of the tag, not a per-fixture signal.
+# Result: 22/22 relegation_six_pointer predictions in the 2026-07-23 to 2026-08-22
+# window called DRAW at confidence_score=62, overriding tag_relegation_six_pointer_v2's
+# actual stakes-verification logic entirely. Only 3/22 were genuine draws (13.6%).
+---
+DRAW DETECTION PROTOCOL: Identify draw-likely fixtures before predicting: flag matches where both teams show similar recent form (form_last5 within 1 win), head-to-head history contains 2+ draws in last 5 meetings, or standings show teams within 3 points with comparable goal difference. Prioritize draws when home team's home_win% and away team's away_win% are both below 40%, or when both teams average under 1.5 goals for and against. When these signals align (3+), explicitly consider DRAW as primary prediction rather than defaulting to stronger-ranked team.
+
+EXCEPTION for relegation_six_pointer fixtures: both teams' win rates sitting below 40% is a structural property of the tag (weak, threatened teams by definition), not an informative per-fixture signal — do not apply the below-40%-win-rate trigger here. Follow the relegation-specific stakes-verification protocol instead, and only treat the fixture as draw-likely if form similarity or head-to-head draw history independently support it, not win-rate alone.
+
+State which draw signals triggered your assessment before selecting outcome.

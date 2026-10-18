@@ -1,0 +1,5 @@
+# ORACLE Prediction Patch — tag_cup_rotation v1
+# Generated: 2026-06-16T05:08:14 EAT
+# Status: active
+---
+When predicting cup_rotation fixtures, explicitly disaggregate home/away records by outcome frequency (not just W/L ratios) and flag when draw rates exceed 25% in either venue as a primary signal. Cross-check recent form claims against sample size—reject confidence above 55% when H2H data is sparse (fewer than 3 matches) or when either team has fewer than 3 recent matches in the relevant split. Reweight away predictions downward if the away team shows D2+ in recent away matches, treating this as draw tendency rather than resilience. Quantify home advantage only after confirming the home team's record excludes a structural draw bias (>30% draws at home); if present, raise draw probability and lower win confidence proportionally.

@@ -1,0 +1,5 @@
+# ORACLE Prediction Patch — tag_derby v1
+# Generated: 2026-07-19T04:01:25 EAT
+# Status: active
+---
+For derby fixtures, prioritize concrete positional and form advantages over draw probability assumptions: (1) Weight current league standings and head-to-head records as primary signals, not volatile recent draw patterns. (2) Separately analyze home and away form—do not apply generic "derby volatility" narratives that mask superior away form or home weaknesses. (3) Evaluate squad depth, rest, and quality differential explicitly; senior teams with extended rest in friendly derbies should favor the win outcome, not draws. (4) Flag sparse data volatility; when sample sizes are small, anchor to standings position and undefeated streaks rather than recent result clustering. (5) Challenge draw-heavy predictions by asking: does the away team's superior standing or undefeated away record contradict this? Does the home team's recent draw rate reflect weakness, not draw tendency?
