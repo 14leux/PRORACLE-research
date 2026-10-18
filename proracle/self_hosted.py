@@ -67,7 +67,8 @@ def _environment_client() -> BSDClient:
     token = os.environ.get("BSD_API_TOKEN", "")
     if not token:
         raise ValueError("BSD_API_TOKEN is required")
-    return BSDClient(token)
+    # A 30-day history page is large; allow the provider 30 s per read and one more retry.
+    return BSDClient(token, timeout_seconds=30.0, max_retries=2)
 
 
 def run_self_hosted(
@@ -114,6 +115,7 @@ def run_self_hosted(
         "results_written": 0,
         "predictions_written": 0,
         "failures_written": 0,
+        "ingest_errors": 0,
     }
     if not execute:
         return summary
@@ -129,14 +131,21 @@ def run_self_hosted(
 
     fixture_ids: dict[str, str] = {}
     for match in [*upcoming, *finished]:
-        fixture_id, result_added = store.ingest_match(match, observed_at=retrieved_at)
+        try:
+            fixture_id, result_added = store.ingest_match(match, observed_at=retrieved_at)
+        except SupabaseStoreError:
+            # One failed write must not abandon the rest of the window. A rerun skips what is
+            # already stored, so the missed event is picked up next time; the run still exits
+            # non-zero below so the failure is never silent.
+            summary["ingest_errors"] += 1
+            continue
         fixture_ids[match.source_event_key] = str(fixture_id)
         summary["fixtures_synced"] += 1
         summary["results_written"] += int(result_added)
 
     if source_failure is not None:
         for match in prediction_candidates:
-            if match.kickoff_at <= retrieved_at:
+            if match.kickoff_at <= retrieved_at or match.source_event_key not in fixture_ids:
                 continue
             event = _failure_event(
                 fixture_ids[match.source_event_key],
@@ -152,7 +161,7 @@ def run_self_hosted(
 
     for match in invalid_upcoming:
         # The failure-event contract records prematch failures only.
-        if match.kickoff_at <= retrieved_at:
+        if match.kickoff_at <= retrieved_at or match.source_event_key not in fixture_ids:
             continue
         event = _failure_event(
             fixture_ids[match.source_event_key],
@@ -170,7 +179,7 @@ def run_self_hosted(
     for match in prediction_candidates:
         # A slow provider/database run can outlive a fixture's prematch window.
         # Do not emit a prediction or an invalid post-kickoff failure event.
-        if match.kickoff_at <= predicted_at:
+        if match.kickoff_at <= predicted_at or match.source_event_key not in fixture_ids:
             continue
         fixture_id = fixture_ids[match.source_event_key]
         if not training:
@@ -266,6 +275,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     label = "write" if args.execute else "preview"
     fields = " ".join(f"{key}={value}" for key, value in summary.items())
+    if summary.get("ingest_errors"):
+        # The rest of the window was processed; a rerun picks up what was missed.
+        print(f"PRORACLE {label} incomplete: {fields}", file=sys.stderr)
+        return 3
     print(f"PRORACLE {label} complete: {fields}")
     return 0
 

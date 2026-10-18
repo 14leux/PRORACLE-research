@@ -192,5 +192,93 @@ class SupabaseAdapterTests(unittest.TestCase):
             SupabaseRESTStore("https://user:password@project.example", "test-service-secret")
 
 
+class RetryTests(unittest.TestCase):
+    def _store(self, sleeps: list[float], retries: int = 3) -> SupabaseRESTStore:
+        return SupabaseRESTStore(
+            "https://project.example",
+            "test-service-secret",
+            max_retries=retries,
+            sleeper=sleeps.append,
+        )
+
+    def test_get_is_retried_after_transport_errors_then_succeeds(self) -> None:
+        sleeps: list[float] = []
+        calls = []
+
+        def flaky(request, timeout):
+            calls.append(request.get_method())
+            if len(calls) < 3:
+                raise TimeoutError()
+            return Response(b"[]")
+
+        with patch("proracle.supabase_adapter.urlopen", flaky):
+            value, _ = self._store(sleeps)._request("GET", "fixtures")
+        self.assertEqual(value, [])
+        self.assertEqual(calls, ["GET", "GET", "GET"])
+        self.assertEqual(sleeps, [0.5, 1.0])
+
+    def test_patch_is_retried_on_server_error(self) -> None:
+        import io
+        from urllib.error import HTTPError
+
+        sleeps: list[float] = []
+        calls = []
+
+        def flaky(request, timeout):
+            calls.append(1)
+            if len(calls) == 1:
+                raise HTTPError("https://project.example/x", 503, "busy", {}, io.BytesIO(b"detail"))
+            return Response()
+
+        with patch("proracle.supabase_adapter.urlopen", flaky):
+            self._store(sleeps)._request("PATCH", "fixtures", payload={"status": "SCHEDULED"})
+        self.assertEqual(len(calls), 2)
+
+    def test_post_is_never_retried(self) -> None:
+        sleeps: list[float] = []
+        calls = []
+
+        def failing(request, timeout):
+            calls.append(1)
+            raise TimeoutError()
+
+        with patch("proracle.supabase_adapter.urlopen", failing):
+            with self.assertRaises(SupabaseStoreError):
+                self._store(sleeps)._request("POST", "results", payload={"id": "x"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sleeps, [])
+
+    def test_client_errors_are_not_retried_and_retries_are_bounded(self) -> None:
+        import io
+        from urllib.error import HTTPError
+
+        sleeps: list[float] = []
+        calls = []
+
+        def forbidden(request, timeout):
+            calls.append(1)
+            raise HTTPError("https://project.example/x", 403, "no", {}, io.BytesIO(b""))
+
+        with patch("proracle.supabase_adapter.urlopen", forbidden):
+            with self.assertRaises(SupabaseStoreError):
+                self._store(sleeps)._request("GET", "fixtures")
+        self.assertEqual(len(calls), 1)
+
+        calls.clear()
+
+        def always_down(request, timeout):
+            calls.append(1)
+            raise TimeoutError()
+
+        with patch("proracle.supabase_adapter.urlopen", always_down):
+            with self.assertRaises(SupabaseStoreError):
+                self._store(sleeps, retries=2)._request("GET", "fixtures")
+        self.assertEqual(len(calls), 3)
+
+    def test_retry_bound_is_validated(self) -> None:
+        with self.assertRaises(ValueError):
+            SupabaseRESTStore("https://project.example", "test-service-secret", max_retries=6)
+
+
 if __name__ == "__main__":
     unittest.main()
