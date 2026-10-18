@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 from proracle.bsd import BSDMatch
 from proracle.contracts import PredictionFailureEvent, PredictionRecord, parse_prediction_record
 from proracle.evaluate import Result
+from proracle.rating import RatingResult
 from proracle.retrospective import (
     ResultVersion,
     StoredPrediction,
@@ -330,6 +331,41 @@ class SupabaseRESTStore:
                 return rows
         raise SupabaseStoreError()
 
+    _RESULT_VERSION_COLUMNS = (
+        "id,fixture_id,supersedes_result_id,status,actual_outcome,observed_at,source_retrieved_at"
+    )
+
+    @staticmethod
+    def _result_version(row: Mapping[str, Any]) -> ResultVersion:
+        fixture = row.get("fixture")
+        fixture_id = row.get("fixture_id")
+        outcome = row.get("actual_outcome")
+        supersedes = row.get("supersedes_result_id")
+        if (
+            not isinstance(fixture, Mapping)
+            or not isinstance(fixture_id, str)
+            or not isinstance(row.get("id"), str)
+            or not isinstance(row.get("status"), str)
+            or (outcome is not None and outcome not in {"HOME_WIN", "DRAW", "AWAY_WIN"})
+            or (supersedes is not None and not isinstance(supersedes, str))
+        ):
+            raise SupabaseStoreError()
+        kickoff_at = _parse_time(fixture.get("kickoff_at"), "kickoff_at")
+        available_at = _parse_time(
+            row.get("source_retrieved_at") or row.get("observed_at"), "available_at"
+        )
+        if available_at < kickoff_at:
+            raise SupabaseStoreError()
+        return ResultVersion(
+            result_id=row["id"],
+            fixture_id=fixture_id,
+            supersedes_id=supersedes,
+            status=row["status"],
+            actual_outcome=outcome,
+            kickoff_at=kickoff_at,
+            available_at=available_at,
+        )
+
     def result_versions(self) -> list[ResultVersion]:
         """Read every result version, whatever its status, so supersession stays intact."""
         rows = self._fetch_all(
@@ -337,44 +373,55 @@ class SupabaseRESTStore:
             (
                 (
                     "select",
-                    "id,fixture_id,supersedes_result_id,status,actual_outcome,observed_at,source_retrieved_at,fixture:fixtures!results_fixture_id_fkey(kickoff_at)",
+                    f"{self._RESULT_VERSION_COLUMNS},fixture:fixtures!results_fixture_id_fkey(kickoff_at)",
+                ),
+                ("order", "id.asc"),
+            ),
+        )
+        return [self._result_version(row) for row in rows]
+
+    def rating_results(self) -> list[RatingResult]:
+        """Current FINAL results with their fixture's team labels, for the rating model.
+
+        Same exact-total paginated read and the same correction resolution as
+        ``training_results``; the fixture join adds only the allowlisted team labels.
+        """
+        rows = self._fetch_all(
+            "results",
+            (
+                (
+                    "select",
+                    f"{self._RESULT_VERSION_COLUMNS},fixture:fixtures!results_fixture_id_fkey(kickoff_at,home_team,away_team)",
                 ),
                 ("order", "id.asc"),
             ),
         )
         versions: list[ResultVersion] = []
+        teams: dict[str, tuple[str, str]] = {}
         for row in rows:
-            fixture = row.get("fixture")
-            fixture_id = row.get("fixture_id")
-            outcome = row.get("actual_outcome")
-            supersedes = row.get("supersedes_result_id")
-            if (
-                not isinstance(fixture, Mapping)
-                or not isinstance(fixture_id, str)
-                or not isinstance(row.get("id"), str)
-                or not isinstance(row.get("status"), str)
-                or (outcome is not None and outcome not in {"HOME_WIN", "DRAW", "AWAY_WIN"})
-                or (supersedes is not None and not isinstance(supersedes, str))
-            ):
+            version = self._result_version(row)
+            fixture = row["fixture"]
+            home, away = fixture.get("home_team"), fixture.get("away_team")
+            if not isinstance(home, str) or not isinstance(away, str):
                 raise SupabaseStoreError()
-            kickoff_at = _parse_time(fixture.get("kickoff_at"), "kickoff_at")
-            available_at = _parse_time(
-                row.get("source_retrieved_at") or row.get("observed_at"), "available_at"
-            )
-            if available_at < kickoff_at:
+            if teams.setdefault(version.fixture_id, (home, away)) != (home, away):
                 raise SupabaseStoreError()
-            versions.append(
-                ResultVersion(
-                    result_id=row["id"],
-                    fixture_id=fixture_id,
-                    supersedes_id=supersedes,
-                    status=row["status"],
-                    actual_outcome=outcome,
-                    kickoff_at=kickoff_at,
-                    available_at=available_at,
-                )
+            versions.append(version)
+        try:
+            current, _non_final = current_training_results(versions)
+        except ValueError:
+            raise SupabaseStoreError() from None
+        return [
+            RatingResult(
+                fixture_id=item.fixture_id,
+                home_team=teams[item.fixture_id][0],
+                away_team=teams[item.fixture_id][1],
+                kickoff_at=item.kickoff_at,
+                available_at=item.available_at,  # type: ignore[arg-type]
+                actual_outcome=item.actual_outcome,
             )
-        return versions
+            for item in current
+        ]
 
     def training_results(self) -> list[Result]:
         # Resolve corrections across all statuses first: a later VOID/CANCELLED version
