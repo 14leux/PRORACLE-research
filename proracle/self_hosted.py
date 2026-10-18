@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -77,9 +78,15 @@ def run_self_hosted(
     bsd_client: BSDClient | None = None,
     store: SupabaseRESTStore | None = None,
     now: datetime | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> dict[str, int]:
     """Fetch one bounded window; write only when execute=True."""
-    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    # One clock for the whole cycle. A pinned `now` pins every timestamp the cycle takes, so tests
+    # and replays never depend on the wall clock (Lesson 169); production passes neither.
+    if clock is None:
+        pinned = now
+        clock = (lambda: pinned) if pinned is not None else (lambda: datetime.now(timezone.utc))
+    now = clock().astimezone(timezone.utc)
     lookahead_days = _positive_days("PRORACLE_LOOKAHEAD_DAYS", 2, 14)
     history_days = _positive_days("PRORACLE_HISTORY_DAYS", 30, 365)
     bsd = bsd_client or _environment_client()
@@ -95,7 +102,7 @@ def run_self_hosted(
         # Upcoming fixtures are known, so execution mode can record one safe event per fixture.
         source_failure = error
         finished = []
-    retrieved_at = datetime.now(timezone.utc)
+    retrieved_at = clock().astimezone(timezone.utc)
 
     invalid_upcoming = [
         match
@@ -175,7 +182,7 @@ def run_self_hosted(
         summary["failures_written"] += 1
 
     training = store.training_results()
-    predicted_at = datetime.now(timezone.utc)
+    predicted_at = clock().astimezone(timezone.utc)
     for match in prediction_candidates:
         # A slow provider/database run can outlive a fixture's prematch window.
         # Do not emit a prediction or an invalid post-kickoff failure event.

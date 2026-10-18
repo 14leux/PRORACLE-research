@@ -137,7 +137,7 @@ class SupabaseAdapterTests(unittest.TestCase):
                 "fixture": {"kickoff_at": "2025-01-01T18:00:00Z"},
             },
         ]
-        store._request = lambda *_args, **_kwargs: (rows, {})  # type: ignore[method-assign]
+        store._request = lambda *_args, **_kwargs: (rows, {"Content-Range": f"0-{max(len(rows) - 1, 0)}/{len(rows)}"})  # type: ignore[method-assign]
         result = store.training_results()
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].actual_outcome, "DRAW")
@@ -190,6 +190,63 @@ class SupabaseAdapterTests(unittest.TestCase):
             SupabaseRESTStore("http://project.example", "test-service-secret")
         with self.assertRaises(ValueError):
             SupabaseRESTStore("https://user:password@project.example", "test-service-secret")
+
+
+class PagedResponse(Response):
+    def __init__(self, rows: list, content_range: str | None):
+        super().__init__(json.dumps(rows).encode())
+        self.status = 200
+        self.headers = {"Content-Type": "application/json"}
+        if content_range is not None:
+            self.headers["Content-Range"] = content_range
+
+
+class PaginationTotalTests(unittest.TestCase):
+    def _store(self, page_size: int = 2, max_pages: int = 100) -> SupabaseRESTStore:
+        return SupabaseRESTStore(
+            "https://project.example",
+            "test-service-secret",
+            page_size=page_size,
+            max_pages=max_pages,
+            max_retries=0,
+        )
+
+    def _run(self, store: SupabaseRESTStore, pages: list[PagedResponse]):
+        calls = iter(pages)
+        with patch("proracle.supabase_adapter.urlopen", lambda request, timeout: next(calls)):
+            return store._fetch_all("results", ())
+
+    def test_complete_read_matches_the_database_total(self) -> None:
+        rows = self._run(
+            self._store(),
+            [PagedResponse([{"i": 1}, {"i": 2}], "0-1/3"), PagedResponse([{"i": 3}], "2-2/3")],
+        )
+        self.assertEqual([r["i"] for r in rows], [1, 2, 3])
+
+    def test_exact_multiple_of_page_size_does_not_request_a_page_past_the_end(self) -> None:
+        rows = self._run(self._store(), [PagedResponse([{"i": 1}, {"i": 2}], "0-1/2")])
+        self.assertEqual(len(rows), 2)
+
+    def test_page_cap_that_truncates_the_read_fails_closed(self) -> None:
+        store = self._store(page_size=1, max_pages=2)
+        with self.assertRaises(SupabaseStoreError):
+            self._run(store, [PagedResponse([{"i": 1}], "0-0/5"), PagedResponse([{"i": 2}], "1-1/5")])
+
+    def test_short_read_total_mismatch_fails_closed(self) -> None:
+        with self.assertRaises(SupabaseStoreError):
+            self._run(self._store(), [PagedResponse([{"i": 1}], "0-0/4")])
+
+    def test_missing_or_unknown_total_fails_closed(self) -> None:
+        for header in (None, "0-1/*", "garbage"):
+            with self.assertRaises(SupabaseStoreError):
+                self._run(self._store(), [PagedResponse([{"i": 1}, {"i": 2}], header)])
+
+    def test_total_changing_between_pages_fails_closed(self) -> None:
+        with self.assertRaises(SupabaseStoreError):
+            self._run(
+                self._store(),
+                [PagedResponse([{"i": 1}, {"i": 2}], "0-1/3"), PagedResponse([{"i": 3}], "2-2/4")],
+            )
 
 
 class RetryTests(unittest.TestCase):

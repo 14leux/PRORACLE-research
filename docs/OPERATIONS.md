@@ -88,3 +88,12 @@ Run each step as its own scheduled command so one failure does not hide another.
 - Delete `reports/` if it holds real rows; it is ignored by Git but still sits on your disk.
 
 If you ever paste a real token anywhere public, revoke it at once (BSD dashboard, Supabase API settings, BotFather `/revoke`) and issue a new one.
+
+## Provider checks to repeat when results look wrong
+
+**Regulation-time score.** PRORACLE scores the 90-minute result. On live responses checked 2026-10-18 (60 days, 5,424 finished events) the provider's `home_score` and `away_score` are the 90-minute score: extra-time goals are in a separate `extra_time_score` object and shoot-out goals in `penalty_shootout`. Of 26 events with unequal extra-time goals, 21 still had a tied `home_score`/`away_score`, and the 6 untied ones were all second legs (`previous_leg_event_id` set). To re-check, fetch a recent window with your own key and compare those fields; report only counts and field names, never match rows. If the provider changes the meaning, `tests/test_bsd.py::RegulationScoreSemanticsTests` documents the assumption to revisit.
+
+**Complete database reads.** Every paginated read compares the rows it collected with the database's own total (`Content-Range`). A missing total, a total that changes between pages, a page cap, or a short read stops the run with `PERSISTENCE_FAILED` instead of passing a partial table as a complete one.
+
+**Clock.** One clock is read per cycle. Pass `now=` (or `clock=`) in tests so no test depends on the wall clock.
+

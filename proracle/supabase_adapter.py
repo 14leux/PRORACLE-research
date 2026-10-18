@@ -285,20 +285,48 @@ class SupabaseRESTStore:
         self._request("POST", "results", payload=payload, prefer="return=minimal")
         return fixture_id, True
 
+    @staticmethod
+    def _content_range_total(headers: Mapping[str, str]) -> int:
+        """The exact row total from `Content-Range: 0-499/1234`. Missing or unknown fails closed."""
+        value = None
+        for key in headers.keys():
+            if key.casefold() == "content-range":
+                value = headers[key]
+                break
+        if not isinstance(value, str) or "/" not in value:
+            raise SupabaseStoreError()
+        total = value.rsplit("/", 1)[1].strip()
+        if not total.isdigit():
+            raise SupabaseStoreError()
+        return int(total)
+
     def _fetch_all(self, table: str, query: Sequence[tuple[str, str]]) -> list[Mapping[str, Any]]:
+        """Read every row, and prove it: the rows collected must equal the database's own total.
+
+        A page cap, a short page, or a table that changed mid-read must never pass as a complete read
+        (Lesson 163: a silently truncated read looked like a small, valid dataset).
+        """
         rows: list[Mapping[str, Any]] = []
+        total: int | None = None
         for page in range(self._max_pages):
             start = page * self._page_size
-            value, _headers = self._request(
+            value, headers = self._request(
                 "GET",
                 table,
                 query=query,
                 prefer="count=exact",
                 item_range=(start, start + self._page_size - 1),
             )
+            page_total = self._content_range_total(headers)
+            if total is None:
+                total = page_total
+            elif page_total != total:
+                raise SupabaseStoreError()
             batch = self._rows(value)
             rows.extend(batch)
-            if len(batch) < self._page_size:
+            if len(rows) >= total or len(batch) < self._page_size:
+                if len(rows) != total:
+                    raise SupabaseStoreError()
                 return rows
         raise SupabaseStoreError()
 
