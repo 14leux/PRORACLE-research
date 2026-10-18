@@ -79,7 +79,7 @@ class SelfHostedCycleTests(unittest.TestCase):
             execute=True,
             bsd_client=FakeBSD(upcoming, finished),
             store=store,
-            now=datetime.now(timezone.utc),
+            now=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
         )
         self.assertEqual(summary["predictions_written"], 1)
         self.assertEqual(summary["fixtures_synced"], 2)
@@ -128,6 +128,49 @@ class SelfHostedCycleTests(unittest.TestCase):
         self.assertEqual(summary["predictions_written"], 0)
 
 
+class ClockTests(unittest.TestCase):
+    """A pinned `now` must pin every timestamp in the cycle (Lesson 169)."""
+
+    def _training(self):
+        return [
+            Result(
+                fixture_id="h1",
+                kickoff_at=datetime(2025, 12, 1, 18, tzinfo=timezone.utc),
+                actual_outcome="HOME_WIN",
+                available_at=datetime(2025, 12, 1, 20, tzinfo=timezone.utc),
+            )
+        ]
+
+    def test_pinned_now_stamps_retrieval_and_prediction_and_ignores_the_wall_clock(self) -> None:
+        pinned = datetime(2030, 1, 1, 12, tzinfo=timezone.utc)
+        store = FakeStore(self._training())
+        run_self_hosted(
+            execute=True,
+            bsd_client=FakeBSD(
+                [match("10", "2030-01-05T18:00:00Z")],
+                [match("20", "2025-12-01T18:00:00Z", status="COMPLETED")],
+            ),
+            store=store,
+            now=pinned,
+        )
+        self.assertEqual(store.predictions[0].predicted_at, pinned)
+        self.assertEqual(store.observed_times, [pinned, pinned])
+
+    def test_explicit_clock_is_used_for_every_reading(self) -> None:
+        ticks = iter(
+            datetime(2030, 1, 1, 12, minute, tzinfo=timezone.utc) for minute in range(10)
+        )
+        store = FakeStore(self._training())
+        run_self_hosted(
+            execute=True,
+            bsd_client=FakeBSD([match("10", "2030-01-05T18:00:00Z")], []),
+            store=store,
+            clock=lambda: next(ticks),
+        )
+        # start of cycle (minute 0), retrieved_at (1), predicted_at (2)
+        self.assertEqual(store.predictions[0].predicted_at.minute, 2)
+
+
 class FlakyStore(FakeStore):
     """Fails the write for chosen source event keys, like a transient database error."""
 
@@ -161,7 +204,7 @@ class IngestIsolationTests(unittest.TestCase):
             execute=True,
             bsd_client=FakeBSD(upcoming, finished),
             store=store,
-            now=datetime.now(timezone.utc),
+            now=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
         )
         self.assertEqual(summary["ingest_errors"], 1)
         self.assertEqual(summary["fixtures_synced"], 2)
@@ -182,7 +225,7 @@ class IngestIsolationTests(unittest.TestCase):
             execute=True,
             bsd_client=FakeBSD(upcoming, []),
             store=store,
-            now=datetime.now(timezone.utc),
+            now=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
         )
         self.assertEqual(summary["ingest_errors"], 1)
         self.assertEqual(summary["predictions_written"], 1)

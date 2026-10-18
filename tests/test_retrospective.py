@@ -301,7 +301,7 @@ class ReportTests(unittest.TestCase):
 class StoreMappingTests(unittest.TestCase):
     def store(self, tables: dict[str, list[dict]]) -> SupabaseRESTStore:
         store = SupabaseRESTStore("https://project.example", "test-service-secret")
-        store._request = lambda _method, table, **_kwargs: (tables[table], {})  # type: ignore[method-assign]
+        store._request = lambda _method, table, **_kwargs: (tables[table], {"Content-Range": f"0-{max(len(tables[table]) - 1, 0)}/{len(tables[table])}"})  # type: ignore[method-assign]
         return store
 
     def test_training_results_drop_a_final_label_later_voided(self) -> None:

@@ -48,6 +48,56 @@ def json_response(payload: object) -> tuple[int, dict[str, str], bytes]:
     return 200, {"Content-Type": "application/json"}, json.dumps(payload).encode()
 
 
+def live_layout_event(
+    *, period: str, home: int, away: int, extra: object, shootout: object
+) -> dict[str, object]:
+    """Field names and structure observed on live provider responses; every value is fabricated."""
+    return {
+        "id": 77,
+        "home_team": "Synthetic Home",
+        "away_team": "Synthetic Away",
+        "home_team_id": 7,
+        "away_team_id": 8,
+        "league_id": 9,
+        "event_date": "2030-01-01T18:00:00Z",
+        "status": "finished",
+        "period": period,
+        "current_minute": 120,
+        "home_score": home,
+        "away_score": away,
+        "home_score_ht": 0,
+        "away_score_ht": 0,
+        "extra_time_score": extra,
+        "penalty_shootout": shootout,
+        "previous_leg_event_id": None,
+    }
+
+
+class RegulationScoreSemanticsTests(unittest.TestCase):
+    """Observed 2026-10-18 on live responses (60 days, 5,424 finished events): home_score and
+    away_score are the 90-minute score. Extra-time goals are reported separately in
+    `extra_time_score`, shoot-out goals in `penalty_shootout`. Evidence: of 26 events with unequal
+    extra-time goals, 21 still show a tied home_score/away_score; the 6 events with an untied score
+    and an extra-time object were all second legs (`previous_leg_event_id` set). If the provider
+    changes this, these tests and the probe described in docs/OPERATIONS.md are the tripwire."""
+
+    def test_after_extra_time_outcome_is_the_ninety_minute_result(self) -> None:
+        aet = live_layout_event(
+            period="AET", home=2, away=2, extra={"home": 0, "away": 1}, shootout=None
+        )
+        self.assertEqual(normalize_bsd_event(aet).actual_outcome, "DRAW")
+
+    def test_after_a_penalty_shootout_outcome_is_the_ninety_minute_draw(self) -> None:
+        pen = live_layout_event(
+            period="PEN",
+            home=1,
+            away=1,
+            extra={"home": 0, "away": 0},
+            shootout={"home": 6, "away": 7},
+        )
+        self.assertEqual(normalize_bsd_event(pen).actual_outcome, "DRAW")
+
+
 class BSDEventNormalizationTests(unittest.TestCase):
     def test_allowlisted_fixture_and_regulation_result_ignore_extra_provider_fields(self) -> None:
         normalized = normalize_bsd_event(event())
