@@ -9,12 +9,13 @@ PRORACLE is an open project for building and honestly evaluating football match 
 - **Validates predictions.** Dependency-free record contracts for one immutable probability vector per fixture (home, draw, away), timestamped before kickoff, with explicit failure events instead of silent bad data.
 - **Evaluates them honestly.** A chronological evaluator reports accuracy, log loss, Brier score, calibration bins and the difference from a simple baseline. The retrospective report adds 95% intervals, slices, exclusions and a "descriptive only" flag for small samples.
 - **Runs offline.** A synthetic end-to-end demo and the whole test suite need no accounts, no network and no credentials.
+- **Rates teams (no AI).** A walk-forward Elo rating with a Davidson draw term, shrinkage and recalibration, written as a second model identity next to the baseline on every run. It is the bar any AI predictor must beat. See [the rating model](docs/RATING_MODEL.md) and the pre-registered [evidence bar](docs/decisions/0005-ai-predictor-evidence-bar.md).
 - **Self-hosts (optional).** A bounded fixture and result adapter for BSD, a smoothed historical-frequency baseline predictor, an isolated `proracle` Supabase schema with grants and row-level security, a read-only retrospective report, and a standalone Telegram report sender, all using your own keys.
 
 ## What it does not do
 
 - **It does not include bookmaker odds, staking, bankroll simulation or betting advice**, and bookmaker prices are not prediction inputs.
-- **It does not show a winning model.** The first predictor is a smoothed outcome-frequency baseline. It exists as a comparator, not as skill.
+- **It does not show a winning model.** The first predictor is a smoothed outcome-frequency baseline, and the rating model has not been scored on real fixtures yet. Both exist as comparators, not as evidence of skill.
 - **It does not give you data.** You supply your own provider key, Supabase project and (optionally) Telegram bot. No maintainer accounts or datasets are shared.
 
 ## What the evidence shows so far
@@ -76,7 +77,13 @@ python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_o
 ```
 
 ```sh
-python -m proracle.retrospective --from 2026-11-01 --until 2026-12-01 --export-dir reports/retrospective
+python -m proracle.retrospective --from 2026-11-01 --until 2026-12-01 --model-name historical_frequency --export-dir reports/retrospective
+```
+
+Each run stores two model identities, so name the one to score. To compare the rating model with the baseline on the same fixtures:
+
+```sh
+python -m proracle.retrospective --from 2026-11-01 --model-name elo_davidson_recalibrated --reference-model-name historical_frequency
 ```
 
 It scores the earliest prediction per fixture, trains the baseline only on results known before the cohort began, excludes void, cancelled and pending fixtures with stated reasons, and reports sample size, 95% intervals, slices and the difference from the baseline. `--export-dir` also writes JSONL the offline evaluator accepts. Real rows stay private (`reports/` is git-ignored); share aggregates only after a data-rights review. See [decision 0003](docs/decisions/0003-point-in-time-retrospective-cohorts.md).
@@ -84,7 +91,7 @@ It scores the earliest prediction per fixture, trains the baseline only on resul
 **4. Telegram summary (optional).** Create a bot with BotFather, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, then preview and send:
 
 ```sh
-python -m proracle.retrospective --from 2026-11-01 --until 2026-12-01 > reports/report.json
+python -m proracle.retrospective --from 2026-11-01 --until 2026-12-01 --model-name historical_frequency > reports/report.json
 python -m proracle.telegram_report --report reports/report.json          # preview only
 python -m proracle.telegram_report --report reports/report.json --send    # sends
 ```
