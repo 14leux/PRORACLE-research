@@ -238,5 +238,149 @@ class IngestIsolationTests(unittest.TestCase):
             self.assertEqual(main(["--execute"]), 0)
 
 
+from proracle.rating import RATING_MODEL_NAME, RatingResult  # noqa: E402
+
+
+def _history() -> list[RatingResult]:
+    rows = []
+    for n in range(1, 13):
+        kickoff = datetime(2029, 12, 1, 18, tzinfo=timezone.utc).replace(day=n)
+        rows.append(
+            RatingResult(
+                fixture_id=f"h{n}",
+                home_team="Home 10" if n % 2 else "Away 10",
+                away_team="Away 10" if n % 2 else "Home 10",
+                kickoff_at=kickoff,
+                available_at=kickoff.replace(hour=20),
+                actual_outcome="HOME_WIN" if n % 3 else "DRAW",
+            )
+        )
+    return rows
+
+
+class RatingStore(FakeStore):
+    def __init__(self, training, history=None, *, fail_read=False, fail_rating_write=False):
+        super().__init__(training)
+        self.history = _history() if history is None else history
+        self.fail_read = fail_read
+        self.fail_rating_write = fail_rating_write
+
+    def rating_results(self):
+        if self.fail_read:
+            raise SupabaseStoreError()
+        return self.history
+
+    def append_prediction(self, record):
+        if self.fail_rating_write and record.model.name == RATING_MODEL_NAME:
+            raise SupabaseStoreError()
+        super().append_prediction(record)
+
+
+class RatingIdentityTests(unittest.TestCase):
+    NOW = datetime(2030, 1, 1, 12, tzinfo=timezone.utc)
+
+    def _training(self):
+        return [
+            Result(
+                fixture_id="h1",
+                kickoff_at=datetime(2025, 12, 1, 18, tzinfo=timezone.utc),
+                actual_outcome="HOME_WIN",
+                available_at=datetime(2025, 12, 1, 20, tzinfo=timezone.utc),
+            )
+        ]
+
+    def _run(self, store):
+        return run_self_hosted(
+            execute=True,
+            bsd_client=FakeBSD([match("10", "2030-01-05T18:00:00Z"), match("11", "2030-01-06T18:00:00Z")]),
+            store=store,
+            now=self.NOW,
+        )
+
+    def _baseline(self, store):
+        return [p for p in store.predictions if p.model.name == "historical_frequency"]
+
+    def test_each_fixture_gets_a_baseline_and_a_distinct_rating_prediction(self) -> None:
+        store = RatingStore(self._training())
+        summary = self._run(store)
+        self.assertEqual(summary["predictions_written"], 2)
+        self.assertEqual(summary["rating_predictions_written"], 2)
+        self.assertEqual(summary["rating_failures"], 0)
+        self.assertEqual(summary["rating_history_results"], 12)
+        rating = [p for p in store.predictions if p.model.name == RATING_MODEL_NAME]
+        baseline = self._baseline(store)
+        self.assertEqual(len(rating), 2)
+        self.assertEqual(len(baseline), 2)
+        for r, b in zip(rating, baseline):
+            self.assertEqual(r.fixture_id, b.fixture_id)
+            self.assertEqual(r.predicted_at, b.predicted_at)
+            self.assertEqual(r.predicted_at, self.NOW)
+            self.assertNotEqual(
+                (r.model.name, r.input_schema_version, r.input_snapshot_hash),
+                (b.model.name, b.input_schema_version, b.input_snapshot_hash),
+            )
+            self.assertEqual(r.input_schema_version, "results-v1")
+            self.assertNotEqual(r.prediction_id, b.prediction_id)
+        self.assertEqual(store.failures, [])
+
+    def test_rating_failures_never_block_or_alter_the_baseline(self) -> None:
+        reference = RatingStore(self._training())
+        self._run(reference)
+        cases = {
+            "read fails": RatingStore(self._training(), fail_read=True),
+            "write fails": RatingStore(self._training(), fail_rating_write=True),
+            "no visible history": RatingStore(self._training(), history=[]),
+            "store has no rating read": FakeStore(self._training()),
+        }
+        for label, store in cases.items():
+            with self.subTest(label):
+                summary = self._run(store)
+                self.assertEqual(summary["predictions_written"], 2)
+                self.assertEqual(summary["rating_predictions_written"], 0)
+                self.assertEqual(summary["rating_failures"], 2)
+                self.assertEqual(summary["ingest_errors"], 0)
+                # No failure event is written for the rating identity (no identity column yet).
+                self.assertEqual(store.failures, [])
+                self.assertEqual(
+                    [p.probabilities for p in self._baseline(store)],
+                    [p.probabilities for p in self._baseline(reference)],
+                )
+                self.assertEqual(
+                    [p.input_snapshot_hash for p in self._baseline(store)],
+                    [p.input_snapshot_hash for p in self._baseline(reference)],
+                )
+
+    def test_baseline_failure_does_not_stop_the_rating_identity(self) -> None:
+        store = RatingStore([])
+        summary = self._run(store)
+        self.assertEqual(summary["predictions_written"], 0)
+        self.assertEqual(summary["failures_written"], 2)
+        self.assertEqual(summary["rating_predictions_written"], 2)
+
+    def test_rating_uses_only_history_available_before_the_pinned_prediction_time(self) -> None:
+        late = RatingResult(
+            fixture_id="late",
+            home_team="Home 10",
+            away_team="Away 10",
+            kickoff_at=datetime(2030, 1, 1, 9, tzinfo=timezone.utc),
+            available_at=datetime(2030, 1, 1, 12, 0, 1, tzinfo=timezone.utc),
+            actual_outcome="AWAY_WIN",
+        )
+        plain, with_late = RatingStore(self._training()), RatingStore(self._training(), history=[*_history(), late])
+        self._run(plain)
+        self._run(with_late)
+        pick = lambda s: [p.probabilities for p in s.predictions if p.model.name == RATING_MODEL_NAME]  # noqa: E731
+        self.assertEqual(pick(plain), pick(with_late))
+
+    def test_dry_run_reports_zero_rating_counters(self) -> None:
+        summary = run_self_hosted(
+            execute=False,
+            bsd_client=FakeBSD([match("40", "2030-01-05T18:00:00Z")]),
+            now=self.NOW,
+        )
+        self.assertEqual(summary["rating_predictions_written"], 0)
+        self.assertEqual(summary["rating_failures"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
