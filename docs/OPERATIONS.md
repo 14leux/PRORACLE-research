@@ -77,6 +77,7 @@ Run each step as its own scheduled command so one failure does not hide another.
 | Provider or Telegram outage | Fixed error code; no partial prediction is recorded as valid. |
 | Report sender fails | Predictions, results, and reports are unaffected. |
 | Rerun after failure | No prediction or result is overwritten (a fixture's kickoff time and status can be updated). A repeated result is not written twice. A rerun while a fixture is still upcoming appends another prediction row for it; the retrospective report scores only the earliest per fixture and lists the rest as `ADDITIONAL_PREDICTION_NOT_SCORED`. |
+| Transient provider or database errors | Database reads and schedule updates are retried up to three times with a short backoff. Inserts are never retried, because a timed-out insert may have succeeded. If one insert still fails, the run finishes the rest of the window, prints `PRORACLE write incomplete` with `ingest_errors=N`, and exits with status 3. Run again: stored events are skipped and the missed one is added. |
 
 ## 7. Teardown
 

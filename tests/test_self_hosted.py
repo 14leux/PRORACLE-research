@@ -8,7 +8,10 @@ from uuid import UUID
 
 from proracle.bsd import BSDMatch, BSDSourceError
 from proracle.evaluate import Result
-from proracle.self_hosted import run_self_hosted
+from unittest.mock import patch
+
+from proracle.self_hosted import main, run_self_hosted
+from proracle.supabase_adapter import SupabaseStoreError
 
 
 class FakeBSD:
@@ -123,6 +126,73 @@ class SelfHostedCycleTests(unittest.TestCase):
         )
         self.assertEqual(summary["eligible_fixtures"], 1)
         self.assertEqual(summary["predictions_written"], 0)
+
+
+class FlakyStore(FakeStore):
+    """Fails the write for chosen source event keys, like a transient database error."""
+
+    def __init__(self, training, bad_keys):
+        super().__init__(training)
+        self.bad_keys = set(bad_keys)
+
+    def ingest_match(self, match, observed_at):
+        if match.source_event_key in self.bad_keys:
+            raise SupabaseStoreError()
+        return super().ingest_match(match, observed_at)
+
+
+class IngestIsolationTests(unittest.TestCase):
+    def test_one_failed_finished_write_does_not_abandon_the_window(self) -> None:
+        upcoming = [match("10", "2030-01-05T18:00:00Z")]
+        finished = [
+            match("20", "2025-12-01T18:00:00Z", status="COMPLETED"),
+            match("21", "2025-12-02T18:00:00Z", status="COMPLETED"),
+        ]
+        training = [
+            Result(
+                fixture_id="h1",
+                kickoff_at=datetime(2025, 12, 1, 18, tzinfo=timezone.utc),
+                actual_outcome="HOME_WIN",
+                available_at=datetime(2025, 12, 1, 20, tzinfo=timezone.utc),
+            )
+        ]
+        store = FlakyStore(training, bad_keys={"20"})
+        summary = run_self_hosted(
+            execute=True,
+            bsd_client=FakeBSD(upcoming, finished),
+            store=store,
+            now=datetime.now(timezone.utc),
+        )
+        self.assertEqual(summary["ingest_errors"], 1)
+        self.assertEqual(summary["fixtures_synced"], 2)
+        self.assertEqual(summary["predictions_written"], 1)
+
+    def test_failed_upcoming_write_skips_only_that_fixture(self) -> None:
+        upcoming = [match("10", "2030-01-05T18:00:00Z"), match("11", "2030-01-05T19:00:00Z")]
+        training = [
+            Result(
+                fixture_id="h1",
+                kickoff_at=datetime(2025, 12, 1, 18, tzinfo=timezone.utc),
+                actual_outcome="HOME_WIN",
+                available_at=datetime(2025, 12, 1, 20, tzinfo=timezone.utc),
+            )
+        ]
+        store = FlakyStore(training, bad_keys={"10"})
+        summary = run_self_hosted(
+            execute=True,
+            bsd_client=FakeBSD(upcoming, []),
+            store=store,
+            now=datetime.now(timezone.utc),
+        )
+        self.assertEqual(summary["ingest_errors"], 1)
+        self.assertEqual(summary["predictions_written"], 1)
+        self.assertEqual(len(store.predictions), 1)
+
+    def test_main_exits_nonzero_when_any_write_was_missed(self) -> None:
+        with patch("proracle.self_hosted.run_self_hosted", return_value={"ingest_errors": 1}):
+            self.assertEqual(main(["--execute"]), 3)
+        with patch("proracle.self_hosted.run_self_hosted", return_value={"ingest_errors": 0}):
+            self.assertEqual(main(["--execute"]), 0)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -62,6 +63,8 @@ class SupabaseRESTStore:
         timeout_seconds: float = 10.0,
         page_size: int = 500,
         max_pages: int = 100,
+        max_retries: int = 3,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         parsed = urlsplit(project_url.strip() if isinstance(project_url, str) else "")
         local_host = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
@@ -83,6 +86,8 @@ class SupabaseRESTStore:
             raise ValueError("timeout_seconds must be positive")
         if not 1 <= page_size <= 1000 or not 1 <= max_pages <= 500:
             raise ValueError("database pagination bounds are invalid")
+        if not 0 <= max_retries <= 5:
+            raise ValueError("max_retries must be between 0 and 5")
         self._base_url = urlunsplit(
             (parsed.scheme, parsed.netloc, "", "", "")
         ).rstrip("/")
@@ -91,8 +96,28 @@ class SupabaseRESTStore:
         self._timeout = timeout_seconds
         self._page_size = page_size
         self._max_pages = max_pages
+        self._max_retries = max_retries
+        self._sleep = sleeper
 
-    def _request(
+    # Only requests that are safe to repeat are retried. GET reads; PATCH sets the same
+    # values again. POST is never retried: a timed-out insert may have succeeded, and a
+    # repeat could append a duplicate row. A failed POST is left to the caller and to the
+    # next scheduled run, which skips what is already stored.
+    _RETRYABLE_METHODS = frozenset({"GET", "PATCH"})
+
+    def _request(self, method: str, table: str, **kwargs: Any) -> tuple[Any, Mapping[str, str]]:
+        attempt = 0
+        while True:
+            try:
+                return self._request_once(method, table, **kwargs)
+            except SupabaseStoreError as error:
+                transient = error.http_status is None or error.http_status >= 500 or error.http_status == 429
+                if method not in self._RETRYABLE_METHODS or not transient or attempt >= self._max_retries:
+                    raise
+                self._sleep(min(0.5 * (2**attempt), 8.0))
+                attempt += 1
+
+    def _request_once(
         self,
         method: str,
         table: str,
