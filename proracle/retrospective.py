@@ -378,6 +378,127 @@ def build_report(cohort: Cohort) -> dict[str, Any]:
     return report
 
 
+def _draw_calibration(rows: Sequence[Prediction]) -> dict[str, float]:
+    mean_draw = sum(row.probabilities["DRAW"] for row in rows) / len(rows)
+    observed = sum(row.actual_outcome == "DRAW" for row in rows) / len(rows)
+    return {
+        "mean_draw_probability": mean_draw,
+        "observed_draw_rate": observed,
+        "gap": mean_draw - observed,
+        "absolute_gap": abs(mean_draw - observed),
+    }
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def build_paired_comparison(
+    predictions: Sequence[StoredPrediction],
+    versions: Sequence[ResultVersion],
+    *,
+    candidate_name: str,
+    reference_name: str,
+    candidate_version: str | None = None,
+    reference_version: str | None = None,
+    predicted_from: datetime | None = None,
+    predicted_until: datetime | None = None,
+) -> dict[str, Any]:
+    """Score two stored model identities on the same fixtures, candidate minus reference.
+
+    Each identity's cohort follows decision 0003 on its own (earliest prediction per fixture
+    per identity, current FINAL label, label not known before that prediction). Only fixtures
+    scored in both cohorts are compared, so neither side can gain from fixtures the other
+    missed; unpaired fixtures are counted, not dropped silently.
+    """
+    candidate = build_cohort(
+        predictions,
+        versions,
+        model_name=candidate_name,
+        model_version=candidate_version,
+        predicted_from=predicted_from,
+        predicted_until=predicted_until,
+    )
+    reference = build_cohort(
+        predictions,
+        versions,
+        model_name=reference_name,
+        model_version=reference_version,
+        predicted_from=predicted_from,
+        predicted_until=predicted_until,
+    )
+    if candidate.model_identity == reference.model_identity:
+        raise ValueError("candidate and reference must be different model identities")
+    cand_rows = {row.fixture_id: row for row in candidate.scored}
+    ref_rows = {row.fixture_id: row for row in reference.scored}
+    paired_ids = sorted(set(cand_rows) & set(ref_rows))
+    if not paired_ids:
+        raise ValueError("the two identities share no scorable fixture")
+    cand = [cand_rows[key] for key in paired_ids]
+    ref = [ref_rows[key] for key in paired_ids]
+
+    def per_row(rows: Sequence[Prediction], metric: str) -> list[float]:
+        return [_scores([row])[metric] for row in rows]
+
+    log_diff = [c - r for c, r in zip(per_row(cand, "log_loss"), per_row(ref, "log_loss"))]
+    brier_diff = [c - r for c, r in zip(per_row(cand, "brier_score"), per_row(ref, "brier_score"))]
+    slices: dict[str, dict[str, Any]] = {}
+    for outcome in OUTCOMES:
+        idx = [i for i, row in enumerate(cand) if row.actual_outcome == outcome]
+        if idx:
+            slices[outcome] = {
+                "fixtures": len(idx),
+                "small_sample": len(idx) < SMALL_SAMPLE_THRESHOLD,
+                "mean_log_loss_difference": sum(log_diff[i] for i in idx) / len(idx),
+            }
+
+    def lead_hours(rows: Sequence[Prediction]) -> float:
+        return _median([(row.kickoff_at - row.prediction_at).total_seconds() / 3600 for row in rows])
+
+    count = len(paired_ids)
+    digest = _canonical_digest(
+        {"candidate": candidate.sha256, "reference": reference.sha256, "paired": paired_ids}
+    )
+    return {
+        "candidate": {
+            "model_identity": candidate.model_identity,
+            "cohort_sha256": candidate.sha256,
+            "scored_fixtures": len(candidate.scored),
+            "unpaired_fixtures": len(cand_rows) - count,
+            "exclusions": dict(candidate.exclusions),
+            "paired": _headline(cand, None),
+            "draw_calibration": _draw_calibration(cand),
+            "median_lead_time_hours": lead_hours(cand),
+        },
+        "reference": {
+            "model_identity": reference.model_identity,
+            "cohort_sha256": reference.sha256,
+            "scored_fixtures": len(reference.scored),
+            "unpaired_fixtures": len(ref_rows) - count,
+            "exclusions": dict(reference.exclusions),
+            "paired": _headline(ref, None),
+            "draw_calibration": _draw_calibration(ref),
+            "median_lead_time_hours": lead_hours(ref),
+        },
+        "paired_fixtures": count,
+        "same_prediction_time_share": sum(
+            c.prediction_at == r.prediction_at for c, r in zip(cand, ref)
+        ) / count,
+        "descriptive_only": count < SMALL_SAMPLE_THRESHOLD,
+        "paired_difference_candidate_minus_reference": {
+            "log_loss": paired_bootstrap_interval(log_diff),
+            "brier_score": paired_bootstrap_interval(brier_diff),
+        },
+        "slices": {"actual_outcome": slices},
+        "sha256": digest,
+        "scoring_rule": "earliest prediction per fixture per identity; only fixtures scored for both identities are paired",
+        "notes": "Negative differences favor the candidate. An interval spanning zero is not evidence of an improvement; fewer than 30 paired fixtures is descriptive only.",
+        "claim_limits": "Prediction metrics only. This comparison makes no profitability claim.",
+    }
+
+
 def export_jsonl(cohort: Cohort, directory: Path) -> tuple[Path, Path]:
     """Write the existing evaluator's input shape; keep the output private by default."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -451,6 +572,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-name", help="required when more than one model identity is stored")
     parser.add_argument("--model-version")
     parser.add_argument(
+        "--reference-model-name",
+        help="compare --model-name (candidate) with this stored identity on the same fixtures",
+    )
+    parser.add_argument("--reference-model-version")
+    parser.add_argument(
         "--export-dir",
         type=Path,
         help="also write evaluator-shaped JSONL here (reports/ is git-ignored; never publish real rows)",
@@ -464,6 +590,21 @@ def main(argv: list[str] | None = None) -> int:
         store = SupabaseRESTStore(
             project_url, service_key, schema=os.environ.get("PRORACLE_DB_SCHEMA", "proracle")
         )
+        if args.reference_model_name is not None:
+            if args.model_name is None or args.export_dir is not None:
+                raise ValueError("--reference-model-name needs --model-name and no --export-dir")
+            report = build_paired_comparison(
+                store.stored_predictions(),
+                store.result_versions(),
+                candidate_name=args.model_name,
+                candidate_version=args.model_version,
+                reference_name=args.reference_model_name,
+                reference_version=args.reference_model_version,
+                predicted_from=_bound(args.predicted_from, "--from"),
+                predicted_until=_bound(args.predicted_until, "--until"),
+            )
+            print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+            return 0
         cohort = build_cohort(
             store.stored_predictions(),
             store.result_versions(),
