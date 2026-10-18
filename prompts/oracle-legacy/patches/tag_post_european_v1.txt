@@ -1,0 +1,5 @@
+# ORACLE Prediction Patch — tag_post_european v1
+# Generated: 2026-05-19T04:30:21 EAT
+# Status: active
+---
+When predicting post_european fixtures, prioritize these adjustments: (1) Weight recent form heavily, as fatigue and squad rotation from European competition significantly impact performance; (2) Examine H2H records specifically in post-European windows, as patterns differ from regular fixtures; (3) Factor in home/away splits with extra scrutiny—teams often show pronounced home advantage after European exertion; (4) Cross-reference standings trends for the 2-3 matches immediately following European games to identify recovery patterns; (5) Downgrade predicted goal totals and upside variance, as post-European matches typically feature reduced intensity and higher defensive focus.

@@ -1,0 +1,6 @@
+# ORACLE Prediction Patch — draw_signal v1
+# Generated: 2026-05-10T03:11:18 EAT
+# Status: active
+---
+**DRAW DETECTION PROTOCOL:**
+Identify draw-likely fixtures before predicting: flag matches where both teams show similar recent form (form_last5 within 1 win), head-to-head history contains 2+ draws in last 5 meetings, or standings show teams within 3 points with comparable goal difference. Prioritize draws when home team's home_win% and away team's away_win% are both below 40%, or when both teams average under 1.5 goals for and against. When these signals align (3+), explicitly consider DRAW as primary prediction rather than defaulting to stronger-ranked team. State which draw signals triggered your assessment before selecting outcome.

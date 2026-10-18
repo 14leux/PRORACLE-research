@@ -1,0 +1,5 @@
+# ORACLE Prediction Patch — tag_dead_rubber v1
+# Generated: 2026-06-03T05:09:11 EAT
+# Status: active
+---
+For dead-rubber fixtures, do not suppress form and away-record signals. Treat recent form (last 5 matches), away win-rate, and home vulnerabilities as primary predictive factors—dead-rubber context reduces stakes but does not eliminate underlying team quality gaps. Prioritize away teams with >35% win rates against home teams with ≤40% win rates at home, even if dead-rubber status suggests higher draw probability. Cross-reference H2H records and current form momentum before applying dead-rubber adjustments to confidence thresholds.

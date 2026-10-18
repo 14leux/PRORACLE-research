@@ -1,0 +1,5 @@
+# ORACLE Prediction Patch — tag_relegation_six_pointer v1
+# Generated: 2026-05-15T04:21:25 EAT
+# Status: active
+---
+For relegation_six_pointer fixtures, prioritize these factors in this order: (1) Recent form over season-long records—teams fighting relegation show extreme volatility, so weight the last 5 matches heavily; (2) Home/away split disparities, as desperate teams often perform drastically different at home versus away; (3) Head-to-head records specifically from the last 2 seasons, filtering out results when either team had different relegation pressure; (4) Current points gap to safety—teams within 3 points of the drop zone play with measurably higher intensity than those further clear. Discard neutral statistical patterns and favor the team showing sharper recent momentum or greater home-field desperation.

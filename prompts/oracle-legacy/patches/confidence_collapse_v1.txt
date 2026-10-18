@@ -1,0 +1,5 @@
+# ORACLE Prediction Patch — confidence_collapse v1
+# Generated: 2026-05-09T04:15:34 EAT
+# Status: active
+---
+When predicting HOME_WIN outcomes, apply heightened scrutiny: explicitly enumerate reasons the away team might succeed (defensive strength, recent form, motivation), not just home advantage factors. If your confidence exceeds 70% for HOME_WIN, pause and audit whether you've underweighted away-team competitive indicators. Cross-check HOME_WIN predictions against: (1) recent head-to-head results favoring away teams, (2) home team's actual home record versus league average, (3) whether home advantage assumptions hold for this specific matchup. Lower your final confidence ceiling for HOME_WIN calls to 65% unless you can articulate at least two away-team weakness factors beyond general home-field effect.
