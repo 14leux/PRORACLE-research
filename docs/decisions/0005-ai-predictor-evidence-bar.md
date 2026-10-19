@@ -13,7 +13,7 @@ The statistical prior is the rating model in [docs/RATING_MODEL.md](../RATING_MO
 
 | Field | Value |
 |---|---|
-| Protocol start date (UTC) | **TO BE FILLED BY THE MAINTAINER** before the first scored generation. Only predictions made at or after this instant count. |
+| Protocol start date (UTC) | **2026-10-20T00:00:00Z**, frozen by the maintainer on 2026-10-19 (before any prediction of the cohort could exist). Only predictions made at or after this instant count. |
 | AI model identity under test | **TO BE FILLED BY THE MAINTAINER**: provider, a dated model id (not a moving alias), prompt file and hash, input schema version, and the model's stated knowledge cutoff. |
 
 Filling these fields is the only permitted edit to this record before the analysis. Any other change voids the pre-registration and needs a new decision record.
