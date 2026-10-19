@@ -34,6 +34,8 @@ Run the verifier with `psql` inside the local database container; `supabase db q
 - `service_role` cannot update/delete predictions or results, truncate tables, or make other fixture changes.
 - Prediction probability and prematch-time constraints hold, final results require an outcome, and each result version has at most one successor.
 
+For a runtime that must not hold an all-access key, use the restricted role in [RESTRICTED_ROLE.md](RESTRICTED_ROLE.md).
+
 The server-side service key is required only by an operator's own trusted runtime. Never put it in a browser, public issue, example file, or pull-request workflow.
 
 ## Access model

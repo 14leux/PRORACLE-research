@@ -201,6 +201,38 @@ class PagedResponse(Response):
             self.headers["Content-Range"] = content_range
 
 
+class ApiKeyHeaderTests(unittest.TestCase):
+    """The restricted runtime role: bearer is the role's token, apikey is the public project key."""
+
+    def _headers(self, **kwargs):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            return Response(b"[]")
+
+        store = SupabaseRESTStore("https://project.example", "role-token-secret", **kwargs)
+        with patch("proracle.supabase_adapter.urlopen", fake_urlopen):
+            store._request("GET", "fixtures")
+        return captured["request"]
+
+    def test_default_sends_the_same_key_in_both_headers(self) -> None:
+        request = self._headers()
+        self.assertEqual(request.get_header("Apikey"), "role-token-secret")
+        self.assertEqual(request.get_header("Authorization"), "Bearer role-token-secret")
+
+    def test_separate_api_key_goes_only_in_apikey(self) -> None:
+        request = self._headers(api_key="sb_publishable_example")
+        self.assertEqual(request.get_header("Apikey"), "sb_publishable_example")
+        self.assertEqual(request.get_header("Authorization"), "Bearer role-token-secret")
+        self.assertNotIn("role-token-secret", request.full_url)
+
+    def test_api_key_must_be_a_single_line(self) -> None:
+        for bad in ("", "  ", "two\nlines"):
+            with self.assertRaises(ValueError):
+                SupabaseRESTStore("https://project.example", "role-token-secret", api_key=bad)
+
+
 class PaginationTotalTests(unittest.TestCase):
     def _store(self, page_size: int = 2, max_pages: int = 100) -> SupabaseRESTStore:
         return SupabaseRESTStore(

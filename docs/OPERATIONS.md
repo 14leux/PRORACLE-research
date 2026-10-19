@@ -17,6 +17,7 @@ Set these in the process environment of the shell or scheduler that runs the com
 | --- | --- | --- |
 | `BSD_API_TOKEN` | `proracle.self_hosted` | Your own provider key. |
 | `SUPABASE_URL` | self-hosted runner, retrospective | Your project URL. |
+| `SUPABASE_API_KEY` | self-hosted runner (optional) | The public project key (for example the publishable key) sent as `apikey` when `SUPABASE_SERVICE_KEY` holds a restricted role's token. Not a secret. See [RESTRICTED_ROLE.md](RESTRICTED_ROLE.md). |
 | `SUPABASE_SERVICE_KEY` | self-hosted runner, retrospective | Server-side secret. Bypasses row-level security; never in browser code. |
 | `PRORACLE_DB_SCHEMA` | self-hosted runner, retrospective | Defaults to `proracle`; use only a schema created by the PRORACLE migrations and exposed in your Supabase API settings. |
 | `PRORACLE_LOOKAHEAD_DAYS` | self-hosted runner | Optional. Days of upcoming fixtures to fetch; integer 1 to 14, default 2. |
