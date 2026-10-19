@@ -18,6 +18,10 @@ from urllib.request import Request, urlopen
 
 API_BASE_URL = "https://sports.bzzoiro.com/api/v2/events/"
 MAX_PAGE_SIZE = 200
+# A finished row with an invalid field (for example a negative score) is skipped, not repaired.
+# More than max(3, 1% of the rows seen) skipped in one fetch means the provider is broken.
+_INVALID_ROWS_FLOOR = 3
+_INVALID_ROWS_FRACTION = 0.01
 _EVENT_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _ALLOWED_SOURCE_STATUSES = frozenset(
     {
@@ -246,6 +250,8 @@ class BSDClient:
         self._max_pages = max_pages
         self._max_retries = max_retries
         self._max_retry_after = max_retry_after_seconds
+        # Finished rows skipped as invalid by the most recent fetch_events call (a count only).
+        self.invalid_rows_skipped = 0
 
     @staticmethod
     def _date(value: str, label: str) -> str:
@@ -339,6 +345,8 @@ class BSDClient:
         if start > end:
             raise ValueError("date_from must not follow date_to")
 
+        self.invalid_rows_skipped = 0
+        rows_seen = 0
         normalized: list[BSDMatch] = []
         seen_keys: set[str] = set()
         offset = 0
@@ -368,10 +376,16 @@ class BSDClient:
             if len(rows) > self._page_size:
                 raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
             for row in rows:
+                rows_seen += 1
                 try:
                     match = normalize_bsd_event(row)
                 except (TypeError, ValueError) as error:
-                    raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False) from error
+                    # Fail closed on the row, not the window, for finished events only. Never
+                    # repair or default a value; a non-object row is still a whole-response failure.
+                    if status != "finished" or not isinstance(row, Mapping):
+                        raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False) from error
+                    self.invalid_rows_skipped += 1
+                    continue
                 if match.source_event_key in seen_keys:
                     raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
                 seen_keys.add(match.source_event_key)
@@ -386,4 +400,6 @@ class BSDClient:
         else:
             if expected_count is not None and offset < expected_count:
                 raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+        if self.invalid_rows_skipped > max(_INVALID_ROWS_FLOOR, int(rows_seen * _INVALID_ROWS_FRACTION)):
+            raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
         return normalized

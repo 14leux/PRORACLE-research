@@ -119,6 +119,7 @@ def run_self_hosted(
         "upcoming_events": len(upcoming),
         "eligible_fixtures": len(prediction_candidates),
         "historical_final_events": len(finished),
+        "source_invalid_rows": int(getattr(bsd, "invalid_rows_skipped", 0)),
         "fixtures_synced": 0,
         "results_written": 0,
         "predictions_written": 0,

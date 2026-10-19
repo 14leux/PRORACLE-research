@@ -382,5 +382,26 @@ class RatingIdentityTests(unittest.TestCase):
         self.assertEqual(summary["rating_failures"], 0)
 
 
+class SourceInvalidRowsSummaryTests(unittest.TestCase):
+    def test_summary_carries_the_skipped_row_count_and_the_run_still_succeeds(self) -> None:
+        class SkippingBSD(FakeBSD):
+            invalid_rows_skipped = 2
+
+        now = datetime(2030, 1, 1, 12, tzinfo=timezone.utc)
+        summary = run_self_hosted(
+            execute=False, bsd_client=SkippingBSD([match("1", "2030-01-02T18:00:00Z")]), now=now
+        )
+        self.assertEqual(summary["source_invalid_rows"], 2)
+        with patch("proracle.self_hosted.run_self_hosted", return_value=summary):
+            self.assertEqual(main([]), 0)
+
+    def test_summary_reports_zero_when_nothing_was_skipped(self) -> None:
+        now = datetime(2030, 1, 1, 12, tzinfo=timezone.utc)
+        summary = run_self_hosted(
+            execute=False, bsd_client=FakeBSD([match("1", "2030-01-02T18:00:00Z")]), now=now
+        )
+        self.assertEqual(summary["source_invalid_rows"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
