@@ -259,5 +259,62 @@ class BSDClientTests(unittest.TestCase):
         self.assertEqual(transport.calls, [])
 
 
+class InvalidFinishedRowTests(unittest.TestCase):
+    """Lesson 175: one invalid finished row must not hide the valid rows in the window."""
+
+    def fetch(self, rows: list[object], status: str = "finished", **kwargs: object):
+        transport = FakeTransport(json_response({"count": len(rows), "results": rows}))
+        client = BSDClient("dummy-user-token", transport=transport, sleeper=lambda _s: None, **kwargs)
+        return client, client.fetch_events(status, "2030-01-01", "2030-01-02")
+
+    def test_one_negative_score_row_is_skipped_and_counted(self) -> None:
+        rows = [event(event_id=1), event(event_id=2, home_score=-1), event(event_id=3)]
+        client, matches = self.fetch(rows)
+        self.assertEqual([m.source_event_key for m in matches], ["1", "3"])
+        self.assertEqual(client.invalid_rows_skipped, 1)
+
+    def test_clean_window_reports_zero(self) -> None:
+        client, matches = self.fetch([event(event_id=1)])
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(client.invalid_rows_skipped, 0)
+
+    def test_more_skips_than_the_threshold_fails_closed(self) -> None:
+        # Threshold is max(3, 1% of rows seen): 3 skips pass, 4 raise.
+        valid = [event(event_id=i) for i in range(10, 20)]
+        bad = [event(event_id=i, away_score=-1) for i in range(1, 5)]
+        client, matches = self.fetch([*valid, *bad[:3]])
+        self.assertEqual((len(matches), client.invalid_rows_skipped), (10, 3))
+        with self.assertRaises(BSDSourceError) as raised:
+            self.fetch([*valid, *bad])
+        self.assertEqual(raised.exception.error_code, "SOURCE_INVALID_RESPONSE")
+
+    def test_invalid_upcoming_row_still_fails_the_whole_response(self) -> None:
+        good = event(event_id=1, status="notstarted", home_score=None, away_score=None)
+        bad = event(event_id=2, status="notstarted", home_score=None, away_score=None)
+        bad["id"] = "not a valid key!"
+        with self.assertRaises(BSDSourceError) as raised:
+            self.fetch([good, bad], status="upcoming")
+        self.assertEqual(raised.exception.error_code, "SOURCE_INVALID_RESPONSE")
+
+    def test_duplicate_key_and_non_object_row_still_fail_closed(self) -> None:
+        for rows in ([event(event_id=1), event(event_id=1)], [event(event_id=1), "not an object"]):
+            with self.assertRaises(BSDSourceError) as raised:
+                self.fetch(rows)
+            self.assertEqual(raised.exception.error_code, "SOURCE_INVALID_RESPONSE")
+
+    def test_no_row_content_reaches_the_error_or_the_counter(self) -> None:
+        bad = event(event_id=2, home_score=-1)
+        bad["home_team"] = {"name": "SENTINEL_TEAM_NAME"}
+        client, _ = self.fetch([event(event_id=1), bad])
+        self.assertIs(type(client.invalid_rows_skipped), int)
+        rows = [event(event_id=i, home_score=-1) for i in range(1, 6)]
+        rows[0]["home_team"] = {"name": "SENTINEL_TEAM_NAME"}
+        with self.assertRaises(BSDSourceError) as raised:
+            self.fetch(rows)
+        text = f"{raised.exception!s} {raised.exception!r}"
+        self.assertNotIn("SENTINEL", text)
+        self.assertIsNone(raised.exception.__cause__)
+
+
 if __name__ == "__main__":
     unittest.main()
