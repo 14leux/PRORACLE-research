@@ -14,6 +14,7 @@ from proracle.bsd import BSDClient, BSDMatch, BSDSourceError
 from proracle.contracts import PredictionFailureEvent
 from proracle.domain import create_baseline_prediction, validate_features
 from proracle.evaluate import Result
+from proracle.rating import RatingState, build_rating_state, create_rating_prediction
 from proracle.supabase_adapter import SupabaseRESTStore, SupabaseStoreError
 
 
@@ -123,6 +124,9 @@ def run_self_hosted(
         "predictions_written": 0,
         "failures_written": 0,
         "ingest_errors": 0,
+        "rating_history_results": 0,
+        "rating_predictions_written": 0,
+        "rating_failures": 0,
     }
     if not execute:
         return summary
@@ -183,67 +187,126 @@ def run_self_hosted(
 
     training = store.training_results()
     predicted_at = clock().astimezone(timezone.utc)
+    # Both identities use the same prediction time, so they are compared at the same run.
+    rating_state = _rating_state(store, predicted_at, summary)
     for match in prediction_candidates:
         # A slow provider/database run can outlive a fixture's prematch window.
         # Do not emit a prediction or an invalid post-kickoff failure event.
         if match.kickoff_at <= predicted_at or match.source_event_key not in fixture_ids:
             continue
         fixture_id = fixture_ids[match.source_event_key]
-        if not training:
+        _write_baseline_prediction(store, match, fixture_id, training, predicted_at, summary)
+        _write_rating_prediction(store, rating_state, match, fixture_id, predicted_at, summary)
+    return summary
+
+
+def _write_baseline_prediction(
+    store: SupabaseRESTStore,
+    match: BSDMatch,
+    fixture_id: str,
+    training: list[Result],
+    predicted_at: datetime,
+    summary: dict[str, int],
+) -> None:
+    """The frequency-baseline identity. Its behaviour is unchanged by the rating identity."""
+    if not training:
+        event = _failure_event(
+            fixture_id,
+            match.kickoff_at,
+            code="FEATURES_MISSING",
+            stage="INPUT_VALIDATION",
+            retryable=True,
+            occurred_at=predicted_at,
+        )
+        store.append_failure(event)
+        summary["failures_written"] += 1
+        return
+
+    try:
+        feature_snapshot = validate_features(_outcome_counts(training, predicted_at))
+        prediction = create_baseline_prediction(
+            match_to_fixture(match, fixture_id),
+            feature_snapshot,
+            training,
+            prediction_id=uuid4(),
+            predicted_at=predicted_at,
+        )
+    except ValueError:
+        event = _failure_event(
+            fixture_id,
+            match.kickoff_at,
+            code="INVALID_INPUT",
+            stage="INPUT_VALIDATION",
+            retryable=False,
+            occurred_at=predicted_at,
+        )
+        store.append_failure(event)
+        summary["failures_written"] += 1
+        return
+
+    try:
+        store.append_prediction(prediction)
+    except SupabaseStoreError:
+        # The persistence service may be unavailable too; do not claim that this
+        # failure event was recorded if its own insert fails.
+        try:
             event = _failure_event(
                 fixture_id,
                 match.kickoff_at,
-                code="FEATURES_MISSING",
-                stage="INPUT_VALIDATION",
+                code="PERSISTENCE_FAILED",
+                stage="PERSISTENCE",
                 retryable=True,
                 occurred_at=predicted_at,
             )
             store.append_failure(event)
             summary["failures_written"] += 1
-            continue
+        finally:
+            raise
+    summary["predictions_written"] += 1
 
-        try:
-            feature_snapshot = validate_features(_outcome_counts(training, predicted_at))
-            prediction = create_baseline_prediction(
-                match_to_fixture(match, fixture_id),
-                feature_snapshot,
-                training,
-                prediction_id=uuid4(),
-                predicted_at=predicted_at,
-            )
-        except ValueError:
-            event = _failure_event(
-                fixture_id,
-                match.kickoff_at,
-                code="INVALID_INPUT",
-                stage="INPUT_VALIDATION",
-                retryable=False,
-                occurred_at=predicted_at,
-            )
-            store.append_failure(event)
-            summary["failures_written"] += 1
-            continue
 
-        try:
-            store.append_prediction(prediction)
-        except SupabaseStoreError:
-            # The persistence service may be unavailable too; do not claim that this
-            # failure event was recorded if its own insert fails.
-            try:
-                event = _failure_event(
-                    fixture_id,
-                    match.kickoff_at,
-                    code="PERSISTENCE_FAILED",
-                    stage="PERSISTENCE",
-                    retryable=True,
-                    occurred_at=predicted_at,
-                )
-                store.append_failure(event)
-                summary["failures_written"] += 1
-            finally:
-                raise
-        summary["predictions_written"] += 1
-    return summary
+def _rating_state(
+    store: SupabaseRESTStore, predicted_at: datetime, summary: dict[str, int]
+) -> RatingState | None:
+    """Build the rating model's state once per cycle; any failure disables only that identity."""
+    try:
+        history = store.rating_results()
+        summary["rating_history_results"] = len(history)
+        return build_rating_state(history, predicted_at)
+    except Exception:  # noqa: BLE001 -- isolation boundary: the baseline must never be blocked
+        return None
+
+
+def _write_rating_prediction(
+    store: SupabaseRESTStore,
+    state: RatingState | None,
+    match: BSDMatch,
+    fixture_id: str,
+    predicted_at: datetime,
+    summary: dict[str, int],
+) -> None:
+    """The rating identity. Never raises, so it can never block or alter the baseline.
+
+    Its failures are counted in the run summary only. The failure-event table has no model
+    identity column yet, so writing one here would be indistinguishable from a baseline failure
+    for the same fixture; recording rating failures as events needs a migration (see
+    docs/RATING_MODEL.md).
+    """
+    if state is None:
+        summary["rating_failures"] += 1
+        return
+    try:
+        prediction = create_rating_prediction(
+            match_to_fixture(match, fixture_id),
+            state,
+            prediction_id=uuid4(),
+            predicted_at=predicted_at,
+        )
+        store.append_prediction(prediction)
+    except Exception:  # noqa: BLE001 -- isolation boundary, as above
+        summary["rating_failures"] += 1
+        return
+    summary["rating_predictions_written"] += 1
 
 
 def match_to_fixture(match: BSDMatch, fixture_id: str):

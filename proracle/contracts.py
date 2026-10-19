@@ -10,7 +10,7 @@ from typing import Any, Mapping
 from uuid import UUID
 
 CONTRACT_VERSION = "1.0"
-INPUT_SCHEMA_VERSIONS = frozenset({"features-v1"})
+INPUT_SCHEMA_VERSIONS = frozenset({"features-v1", "results-v1"})
 OUTCOMES = ("HOME_WIN", "DRAW", "AWAY_WIN")
 PROBABILITY_SUM_TOLERANCE = 1e-6
 

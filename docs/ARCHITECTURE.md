@@ -54,7 +54,7 @@ The example UUIDs and snapshot digest are fabricated format examples only; they 
 
 Required validation:
 
-- `contract_version` and `input_schema_version` are recognized, and IDs are non-empty local identifiers.
+- `contract_version` and `input_schema_version` are recognized (`features-v1` for the frequency baseline, `results-v1` for the [rating model](RATING_MODEL.md)), and IDs are non-empty local identifiers.
 - All timestamps are ISO-8601 with an explicit offset and are stored/compared in UTC. `predicted_at` must be strictly earlier than `kickoff_at`.
 - `probabilities` contains exactly `HOME_WIN`, `DRAW`, and `AWAY_WIN`; each is finite and between 0 and 1 inclusive; their sum is 1 within an absolute tolerance of `1e-6`.
 - A successful record contains no actual result, bookmaker price, market-implied probability, stake, bet decision, or free-form model rationale. A failed/invalid model call is an explicit error event and never a fabricated probability row.

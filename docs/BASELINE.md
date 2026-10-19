@@ -179,7 +179,7 @@ python -m proracle.evaluate --training-results data/synthetic/training_results.j
 To produce the equivalent report on your own predictions and results, with 95% intervals and the baseline comparison:
 
 ```sh
-python -m proracle.retrospective --from 2026-11-01 --until 2026-12-01
+python -m proracle.retrospective --from 2026-11-01 --until 2026-12-01 --model-name historical_frequency
 ```
 
 State the cohort dates, exclusions and sample size when you share a result, as in [the evaluation protocol](EVALUATION_PROTOCOL.md) and [the finding template](SHARE_FINDINGS.md).

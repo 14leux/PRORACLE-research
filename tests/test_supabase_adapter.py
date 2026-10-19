@@ -337,5 +337,75 @@ class RetryTests(unittest.TestCase):
             SupabaseRESTStore("https://project.example", "test-service-secret", max_retries=6)
 
 
+def _rating_row(rid, fixture, *, status="FINAL", outcome="HOME_WIN", supersedes=None, retrieved="2025-01-01T20:05:00Z", home="Synthetic Home", away="Synthetic Away"):
+    return {
+        "id": rid,
+        "fixture_id": fixture,
+        "supersedes_result_id": supersedes,
+        "status": status,
+        "actual_outcome": outcome,
+        "observed_at": retrieved,
+        "source_retrieved_at": retrieved,
+        "fixture": {"kickoff_at": "2025-01-01T18:00:00Z", "home_team": home, "away_team": away},
+    }
+
+
+class RatingResultsReadTests(unittest.TestCase):
+    def _store(self, page_size: int = 500) -> SupabaseRESTStore:
+        return SupabaseRESTStore(
+            "https://project.example", "test-service-secret", page_size=page_size, max_retries=0
+        )
+
+    def test_reads_team_labels_through_the_fixture_join_with_exact_totals(self) -> None:
+        store = self._store()
+        rows = [
+            _rating_row("r1", "f1"),
+            _rating_row("r2", "f1", outcome="DRAW", supersedes="r1", retrieved="2025-01-02T20:05:00Z"),
+            _rating_row("r3", "f2", home="Other Home", away="Other Away"),
+            _rating_row("r4", "f2", status="VOID", outcome=None, supersedes="r3", retrieved="2025-01-03T09:00:00Z", home="Other Home", away="Other Away"),
+        ]
+        captured = []
+
+        def request(method, table, **kwargs):
+            captured.append((method, table, kwargs))
+            return rows, {"Content-Range": f"0-{len(rows) - 1}/{len(rows)}"}
+
+        store._request = request  # type: ignore[method-assign]
+        results = store.rating_results()
+        self.assertEqual(len(results), 1)
+        only = results[0]
+        self.assertEqual((only.home_team, only.away_team, only.actual_outcome), ("Synthetic Home", "Synthetic Away", "DRAW"))
+        self.assertEqual(only.available_at, datetime(2025, 1, 2, 20, 5, tzinfo=timezone.utc))
+        method, table, kwargs = captured[0]
+        self.assertEqual((method, table, kwargs["prefer"]), ("GET", "results", "count=exact"))
+        select = dict(kwargs["query"])["select"]
+        self.assertIn("fixture:fixtures!results_fixture_id_fkey(kickoff_at,home_team,away_team)", select)
+        self.assertNotIn("odds", select)
+
+    def test_paginates_and_fails_closed_on_a_short_total(self) -> None:
+        rows = [_rating_row(f"r{i}", f"f{i}") for i in range(3)]
+        pages = iter([
+            PagedResponse(rows[:2], "0-1/3"),
+            PagedResponse(rows[2:], "2-2/3"),
+        ])
+        with patch("proracle.supabase_adapter.urlopen", lambda request, timeout: next(pages)):
+            self.assertEqual(len(self._store(page_size=2).rating_results()), 3)
+        short = iter([PagedResponse(rows[:1], "0-0/3")])
+        with patch("proracle.supabase_adapter.urlopen", lambda request, timeout: next(short)):
+            with self.assertRaises(SupabaseStoreError):
+                self._store(page_size=2).rating_results()
+
+    def test_missing_team_label_or_ambiguous_chain_fails_closed(self) -> None:
+        bad_rows = [
+            [_rating_row("r1", "f1", home=None)],  # type: ignore[arg-type]
+            [_rating_row("r1", "f1"), _rating_row("r2", "f1")],  # two current heads
+        ]
+        for rows in bad_rows:
+            store = self._store()
+            store._request = lambda *_a, rows=rows, **_k: (rows, {"Content-Range": f"0-{len(rows) - 1}/{len(rows)}"})  # type: ignore[method-assign]
+            with self.subTest(rows=len(rows)), self.assertRaises(SupabaseStoreError):
+                store.rating_results()
+
+
 if __name__ == "__main__":
     unittest.main()

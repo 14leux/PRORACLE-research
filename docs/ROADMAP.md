@@ -17,6 +17,8 @@ The roadmap is a set of current public work areas, not a copy of the private pro
 - [x] Add a deterministic synthetic fixture-to-prediction-to-result flow with fake service boundaries and a time-aware add-one baseline.
 - [x] Report accuracy, log loss, Brier score, calibration bins, baseline comparisons, and limitations.
 - [x] Add uncertainty estimates and sample-size guidance (`proracle.retrospective`): Wilson and seeded paired-bootstrap intervals, descriptive-only flag under 30 fixtures. Verified offline; not yet run on real stored rows.
+- [/] Add a walk-forward rating model (Elo with a Davidson draw term, shrinkage and recalibration) as a second model identity on every run, with a paired retrospective comparison ([docs/RATING_MODEL.md](RATING_MODEL.md)). Verified offline on synthetic data only; its bar against the frequency baseline is pre-registered in [decision 0005](decisions/0005-ai-predictor-evidence-bar.md), and the protocol start date is not yet set.
+- [ ] Record failure events per model identity (needs a migration adding model columns to `prediction_failures`).
 
 ## Self-hosting and reports
 
