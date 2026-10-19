@@ -65,6 +65,7 @@ class SupabaseRESTStore:
         page_size: int = 500,
         max_pages: int = 100,
         max_retries: int = 3,
+        api_key: str | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         parsed = urlsplit(project_url.strip() if isinstance(project_url, str) else "")
@@ -92,7 +93,15 @@ class SupabaseRESTStore:
         self._base_url = urlunsplit(
             (parsed.scheme, parsed.netloc, "", "", "")
         ).rstrip("/")
+        if api_key is not None and (
+            not isinstance(api_key, str) or not api_key.strip() or "\n" in api_key
+        ):
+            raise ValueError("SUPABASE_API_KEY must be a single-line project key")
         self._service_key = service_key.strip()
+        # The gateway wants a project key in `apikey` (the public publishable key is enough) and
+        # the credential that selects the database role in `Authorization`. With the restricted
+        # runtime role, the bearer is that role's token and `apikey` is the publishable key.
+        self._api_key = api_key.strip() if api_key else self._service_key
         self._schema = schema
         self._timeout = timeout_seconds
         self._page_size = page_size
@@ -135,7 +144,7 @@ class SupabaseRESTStore:
         if query_string:
             url += f"?{query_string}"
         headers = {
-            "apikey": self._service_key,
+            "apikey": self._api_key,
             "Authorization": f"Bearer {self._service_key}",
             "Accept": "application/json",
             "Accept-Profile": self._schema,

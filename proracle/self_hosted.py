@@ -137,7 +137,10 @@ def run_self_hosted(
         if not project_url or not service_key:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY are required with --execute")
         store = SupabaseRESTStore(
-            project_url, service_key, schema=os.environ.get("PRORACLE_DB_SCHEMA", "proracle")
+            project_url,
+            service_key,
+            schema=os.environ.get("PRORACLE_DB_SCHEMA", "proracle"),
+            api_key=os.environ.get("SUPABASE_API_KEY") or None,
         )
 
     fixture_ids: dict[str, str] = {}
