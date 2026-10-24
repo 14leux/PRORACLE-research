@@ -1,6 +1,6 @@
 # Decision 0005: Pre-registered Evidence Bar for an AI Predictor and for the Rating Model
 
-- **Status:** Accepted as a pre-registration. Two fields below are deliberately left open and must be filled, in a later commit and before the first scored generation, by the maintainer: the protocol start date and the AI model identity.
+- **Status:** Accepted as a pre-registration. The protocol start date and the AI model id and cutoff are now filled. The remaining model-identity details (prompt file and hash, input schema version, thinking and effort settings, prediction moment) must be filled by the maintainer in the commit that adds the Shape 2 prompt, before the first scored generation.
 - **Date:** 2026-10-18
 
 ## Context
@@ -14,7 +14,7 @@ The statistical prior is the rating model in [docs/RATING_MODEL.md](../RATING_MO
 | Field | Value |
 |---|---|
 | Protocol start date (UTC) | **2026-10-20T00:00:00Z**, frozen by the maintainer on 2026-10-19 (before any prediction of the cohort could exist). Only predictions made at or after this instant count. |
-| AI model identity under test | **TO BE FILLED BY THE MAINTAINER**: provider, a dated model id (not a moving alias), prompt file and hash, input schema version, and the model's stated knowledge cutoff. |
+| AI model identity under test | Provider: Anthropic. Model id: `claude-sonnet-5-5` (Claude Sonnet 5.5), chosen by the maintainer on 2026-10-24. Anthropic's models overview states every Claude API model id is a pinned snapshot, including dateless ids, so this id is not a moving alias. Stated reliable knowledge cutoff: June 2026; stated training data cutoff: June 2026 (Anthropic models overview, read 2026-10-24). Every scored fixture must kick off after 2026-06-30, which the protocol start date already guarantees. **Still to be frozen, in the commit that adds the Shape 2 prompt and before the first scored generation:** prompt file and hash, input schema version, thinking and effort settings, and prediction moment. |
 
 Filling these fields is the only permitted edit to this record before the analysis. Any other change voids the pre-registration and needs a new decision record.
 
