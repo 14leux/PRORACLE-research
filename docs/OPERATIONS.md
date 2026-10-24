@@ -74,6 +74,7 @@ Run each step as its own scheduled command so one failure does not hide another.
 
 | Situation | What happens |
 | --- | --- |
+| League names unavailable | Events carry a league id only, so each run also reads the provider's league list (a small, paginated read) to label fixtures with a competition name. If that read fails, the run continues and those fixtures are stored without a name; a name an event already carries is never overwritten, and stored names are not changed later by this step. The run summary's `competition_names_filled` counts labelled events. |
 | Missing or malformed credentials | A missing or malformed `BSD_API_TOKEN` stops the command before any request. With `--execute`, the Supabase variables are checked after the provider fetch and before any database write, so a missing Supabase variable still uses provider quota. The message names the problem category. |
 | Provider or Telegram outage | Fixed error code; no partial prediction is recorded as valid. |
 | Report sender fails | Predictions, results, and reports are unaffected. |

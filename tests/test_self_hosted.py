@@ -405,3 +405,59 @@ class SourceInvalidRowsSummaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompetitionNameTests(unittest.TestCase):
+    NOW = datetime(2030, 1, 1, 10, tzinfo=timezone.utc)
+
+    def labelled(self, key: str, league_id: str | None, name: str | None) -> BSDMatch:
+        from dataclasses import replace
+
+        return replace(
+            match(key, "2030-01-01T18:00:00Z"), competition_id=league_id, competition_name=name
+        )
+
+    def run_cycle(self, bsd) -> tuple[dict[str, int], list[BSDMatch]]:
+        seen: list[BSDMatch] = []
+
+        class Recording(FakeStore):
+            def ingest_match(self, match: BSDMatch, observed_at: datetime):
+                seen.append(match)
+                return super().ingest_match(match, observed_at)
+
+        summary = run_self_hosted(execute=True, bsd_client=bsd, store=Recording([]), now=self.NOW)
+        return summary, seen
+
+    def test_missing_names_are_filled_from_the_league_map_and_existing_names_are_kept(self) -> None:
+        class NamedBSD(FakeBSD):
+            def fetch_league_names(self):
+                return {"9": "Synthetic League Nine", "5": "Never Used"}
+
+        upcoming = [
+            self.labelled("1", "9", None),
+            self.labelled("2", "5", "Name From The Event"),
+            self.labelled("3", "7", None),  # id not in the map: stays unnamed
+            self.labelled("4", None, None),
+        ]
+        summary, seen = self.run_cycle(NamedBSD(upcoming))
+        names = {m.source_event_key: m.competition_name for m in seen}
+        self.assertEqual(
+            names, {"1": "Synthetic League Nine", "2": "Name From The Event", "3": None, "4": None}
+        )
+        self.assertEqual(summary["competition_names_filled"], 2)
+
+    def test_a_league_lookup_failure_never_blocks_the_cycle(self) -> None:
+        class FailingNames(FakeBSD):
+            def fetch_league_names(self):
+                raise BSDSourceError("SOURCE_UNAVAILABLE", retryable=True)
+
+        summary, seen = self.run_cycle(FailingNames([self.labelled("1", "9", None)]))
+        self.assertEqual(summary["fixtures_synced"], 1)
+        self.assertEqual(summary["ingest_errors"], 0)
+        self.assertEqual([m.competition_name for m in seen], [None])
+        self.assertEqual(summary["competition_names_filled"], 0)
+
+    def test_a_client_without_the_lookup_is_unchanged(self) -> None:
+        summary, seen = self.run_cycle(FakeBSD([self.labelled("1", "9", None)]))
+        self.assertEqual([m.competition_name for m in seen], [None])
+        self.assertEqual(summary["fixtures_synced"], 1)
