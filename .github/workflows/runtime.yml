@@ -4,7 +4,7 @@
 #   - triggers are only `workflow_dispatch` and (once enabled) `schedule`; never a pull request,
 #     `pull_request_target` or `workflow_run`, so a fork or an open PR can never reach a secret
 #   - secrets live in the `production` environment, which is limited to the `main` branch
-#   - the database credential is the restricted `proracle_runtime` role token (docs/RESTRICTED_ROLE.md),
+#   - the database credential is the restricted `proracle_runtime` role token (secret PRORACLE_RUNTIME_JWT, docs/RESTRICTED_ROLE.md),
 #     never a service-role key
 #   - the token is read-only, every action is pinned to a full commit SHA, and event values reach
 #     scripts only through `env:`, never by interpolation into `run:`
@@ -60,7 +60,7 @@ jobs:
           PRORACLE_HISTORY_DAYS: ${{ github.event_name == 'schedule' && '2' || github.event.inputs.history_days }}
           PRORACLE_DB_SCHEMA: proracle
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.PRORACLE_RUNTIME_JWT }}
           SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
           BSD_API_TOKEN: ${{ secrets.BSD_API_KEY }}
         run: |
@@ -75,7 +75,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.PRORACLE_RUNTIME_JWT }}
           SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
