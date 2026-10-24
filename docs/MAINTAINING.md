@@ -52,7 +52,7 @@ Failures produce explicit failure records and never a partial prediction. A fail
 
 - CI: 10-minute job timeouts, superseded runs cancelled, two Python versions only.
 - Production: a single concurrent run, a documented schedule, a cost cap per run, and a monthly budget alert on every paid account.
-- The only scheduled job is `runtime.yml` (once enabled): one concurrent run, a 15-minute timeout, and public-repository minutes.
+- The only scheduled job is `runtime.yml` (once enabled): one concurrent run, a 30-minute timeout, and public-repository minutes.
 
 ## Repository settings checklist (apply and verify at publication)
 
