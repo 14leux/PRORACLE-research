@@ -2,7 +2,7 @@
 
 PRORACLE is an open project for building and honestly evaluating football match predictions. It gives you a small, self-hosted pipeline (fixtures in, probability-bearing predictions out, results scored later) and a strict evaluation protocol that reports sample sizes, uncertainty and exclusions, so a claim can be checked instead of believed.
 
-> **Release status: first public release, 2026-10-17.** The offline suite and disposable local Supabase migration, grant, and row-level-security checks pass. No hosted database, live provider account, or real-data prediction run has been verified. Nothing here is evidence of real match-prediction skill.
+> **Release status: first public release, 2026-10-17.** The offline suite and disposable local Supabase migration, grant, and row-level-security checks pass. Since 2026-10-18 the maintainer has also run PRORACLE on a hosted Supabase database with the live BSD provider and recorded real-data predictions; no accuracy claim is supported yet. Nothing here is evidence of real match-prediction skill.
 
 ## What it does today
 
