@@ -7,6 +7,7 @@ import os
 import sys
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -73,6 +74,29 @@ def _environment_client() -> BSDClient:
     return BSDClient(token, timeout_seconds=30.0, max_retries=2)
 
 
+def _league_names(bsd: BSDClient) -> dict[str, str]:
+    """League id -> name for labelling. Optional: a failure never blocks fixtures or predictions."""
+    fetch = getattr(bsd, "fetch_league_names", None)
+    if fetch is None:
+        return {}
+    try:
+        return dict(fetch())
+    except BSDSourceError:
+        return {}
+
+
+def _with_competition_names(matches: list[BSDMatch], names: dict[str, str]) -> list[BSDMatch]:
+    """Fill a missing competition name from the league map; never overwrite one the event carried."""
+    if not names:
+        return matches
+    return [
+        replace(match, competition_name=names.get(match.competition_id or ""))
+        if match.competition_name is None and match.competition_id in names
+        else match
+        for match in matches
+    ]
+
+
 def run_self_hosted(
     *,
     execute: bool,
@@ -95,10 +119,16 @@ def run_self_hosted(
     end_day = start_day + timedelta(days=lookahead_days)
     history_day = start_day - timedelta(days=history_days)
 
-    upcoming = bsd.fetch_events("upcoming", start_day.isoformat(), end_day.isoformat())
+    league_names = _league_names(bsd)
+    upcoming = _with_competition_names(
+        bsd.fetch_events("upcoming", start_day.isoformat(), end_day.isoformat()), league_names
+    )
     source_failure: BSDSourceError | None = None
     try:
-        finished = bsd.fetch_events("finished", history_day.isoformat(), start_day.isoformat())
+        finished = _with_competition_names(
+            bsd.fetch_events("finished", history_day.isoformat(), start_day.isoformat()),
+            league_names,
+        )
     except BSDSourceError as error:
         # Upcoming fixtures are known, so execution mode can record one safe event per fixture.
         source_failure = error
@@ -120,6 +150,7 @@ def run_self_hosted(
         "eligible_fixtures": len(prediction_candidates),
         "historical_final_events": len(finished),
         "source_invalid_rows": int(getattr(bsd, "invalid_rows_skipped", 0)),
+        "competition_names_filled": sum(1 for m in [*upcoming, *finished] if m.competition_name),
         "fixtures_synced": 0,
         "results_written": 0,
         "predictions_written": 0,

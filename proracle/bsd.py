@@ -17,6 +17,8 @@ from urllib.request import Request, urlopen
 
 
 API_BASE_URL = "https://sports.bzzoiro.com/api/v2/events/"
+# League names are fetched once per run to label fixtures: events carry a league id only.
+LEAGUES_URL = "https://sports.bzzoiro.com/api/v2/leagues/"
 MAX_PAGE_SIZE = 200
 # A finished row with an invalid field (for example a negative score) is skipped, not repaired.
 # More than max(3, 1% of the rows seen) skipped in one fetch means the provider is broken.
@@ -252,6 +254,8 @@ class BSDClient:
         self._max_retry_after = max_retry_after_seconds
         # Finished rows skipped as invalid by the most recent fetch_events call (a count only).
         self.invalid_rows_skipped = 0
+        # League rows skipped as invalid by the most recent fetch_league_names call (a count only).
+        self.league_rows_skipped = 0
 
     @staticmethod
     def _date(value: str, label: str) -> str:
@@ -278,8 +282,10 @@ class BSDClient:
         code = value.get("code")
         return code if isinstance(code, str) and len(code) <= 64 else None
 
-    def _get_page(self, params: Mapping[str, str]) -> Mapping[str, Any]:
-        url = f"{API_BASE_URL}?{urlencode(params)}"
+    def _get_page(
+        self, params: Mapping[str, str], base_url: str = API_BASE_URL
+    ) -> Mapping[str, Any]:
+        url = f"{base_url}?{urlencode(params)}"
         headers = {"Authorization": f"Token {self._token}", "Accept": "application/json"}
         for attempt in range(self._max_retries + 1):
             try:
@@ -403,3 +409,55 @@ class BSDClient:
         if self.invalid_rows_skipped > max(_INVALID_ROWS_FLOOR, int(rows_seen * _INVALID_ROWS_FRACTION)):
             raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
         return normalized
+
+    def fetch_league_names(self) -> dict[str, str]:
+        """League id -> display name, so fixtures can carry a competition name.
+
+        Names are labels only. A row without a usable id or name is skipped and counted; a malformed
+        response, an inconsistent count or a truncated read fails closed with a stable code.
+        """
+        self.league_rows_skipped = 0
+        names: dict[str, str] = {}
+        offset = 0
+        expected_count: int | None = None
+        for _page in range(self._max_pages):
+            payload = self._get_page(
+                {"limit": str(self._page_size), "offset": str(offset)}, base_url=LEAGUES_URL
+            )
+            rows = payload["results"]
+            count = payload.get("count")
+            if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+            if expected_count is None and count is not None:
+                expected_count = count
+            elif count is not None and expected_count != count:
+                raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+            if not rows:
+                if expected_count is not None and offset < expected_count:
+                    raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+                break
+            if len(rows) > self._page_size:
+                raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+                try:
+                    league_id = _optional_label(row.get("id"))
+                    name = _optional_label(row.get("name"))
+                except ValueError:
+                    league_id, name = None, None
+                if league_id is None or name is None:
+                    self.league_rows_skipped += 1
+                    continue
+                names[league_id] = name
+            offset += len(rows)
+            if expected_count is not None and offset >= expected_count:
+                break
+            if len(rows) < self._page_size:
+                if expected_count is not None and offset < expected_count:
+                    raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+                break
+        else:
+            if expected_count is not None and offset < expected_count:
+                raise BSDSourceError("SOURCE_INVALID_RESPONSE", retryable=False)
+        return names

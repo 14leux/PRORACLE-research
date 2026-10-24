@@ -318,3 +318,54 @@ class InvalidFinishedRowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeagueNamesTests(unittest.TestCase):
+    def client(self, *responses, page_size: int = 2, token: str = "SENTINEL_TOKEN") -> tuple[BSDClient, FakeTransport]:
+        transport = FakeTransport(*responses)
+        return BSDClient(token, transport=transport, sleeper=lambda _s: None, page_size=page_size), transport
+
+    def test_names_are_collected_across_pages_and_keyed_by_text_id(self) -> None:
+        client, transport = self.client(
+            json_response({"count": 3, "results": [{"id": 1, "name": "Alpha  League"}, {"id": "2", "name": "Beta Cup"}]}),
+            json_response({"count": 3, "results": [{"id": 3, "name": "Gamma Division"}]}),
+        )
+        self.assertEqual(client.fetch_league_names(), {"1": "Alpha League", "2": "Beta Cup", "3": "Gamma Division"})
+        self.assertEqual(len(transport.calls), 2)
+        self.assertIn("/api/v2/leagues/", transport.calls[0][0])
+        self.assertIn("offset=2", transport.calls[1][0])
+        self.assertEqual(transport.calls[0][1]["Authorization"], "Token SENTINEL_TOKEN")
+
+    def test_rows_without_a_usable_id_or_name_are_skipped_and_counted(self) -> None:
+        client, _ = self.client(
+            json_response(
+                {
+                    "count": 4,
+                    "results": [{"id": 1, "name": "Alpha League"}, {"id": None, "name": "No id"}],
+                }
+            ),
+            json_response({"count": 4, "results": [{"id": 3, "name": ""}, {"id": True, "name": "Bad id"}]}),
+        )
+        self.assertEqual(client.fetch_league_names(), {"1": "Alpha League"})
+        self.assertEqual(client.league_rows_skipped, 3)
+
+    def test_a_truncated_read_fails_closed(self) -> None:
+        client, _ = self.client(
+            json_response({"count": 5, "results": [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]}),
+            json_response({"count": 5, "results": []}),
+        )
+        with self.assertRaises(BSDSourceError) as context:
+            client.fetch_league_names()
+        self.assertEqual(context.exception.error_code, "SOURCE_INVALID_RESPONSE")
+
+    def test_a_malformed_response_fails_closed_without_leaking_it(self) -> None:
+        client, _ = self.client((200, {}, b"<html>SENTINEL_SECRET</html>"))
+        with self.assertRaises(BSDSourceError) as context:
+            client.fetch_league_names()
+        self.assertEqual(context.exception.error_code, "SOURCE_INVALID_RESPONSE")
+        self.assertNotIn("SENTINEL", str(context.exception))
+
+    def test_a_non_object_row_fails_closed(self) -> None:
+        client, _ = self.client(json_response({"count": 1, "results": ["not a row"]}))
+        with self.assertRaises(BSDSourceError):
+            client.fetch_league_names()
