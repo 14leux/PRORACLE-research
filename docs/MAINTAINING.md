@@ -44,7 +44,7 @@ Decision (2026-10-18, supersedes the earlier private-runtime design): the schedu
 - **Public logs.** Logs carry fixed codes and counts only. They do reveal run timing and aggregate counts.
 - **Rotation.** The role token is revocable instantly (`revoke proracle_runtime from authenticator;`) without touching the project's signing secret. Rotate it before it expires and after any suspected exposure.
 
-Required `production` environment secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (the role token), `SUPABASE_API_KEY` (the publishable key), `BSD_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+Required `production` environment secrets: `SUPABASE_URL`, `PRORACLE_RUNTIME_JWT` (the role token, passed to the code as `SUPABASE_SERVICE_KEY`), `SUPABASE_API_KEY` (the publishable key), `BSD_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
 Failures produce explicit failure records and never a partial prediction. A failed run sends a Telegram failure notice.
 
