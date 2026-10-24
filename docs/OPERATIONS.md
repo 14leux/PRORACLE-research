@@ -1,6 +1,6 @@
 # Running PRORACLE yourself
 
-This guide covers one operator running PRORACLE on their own machine and accounts. Nothing here uses the maintainer's credentials, database, or bot. The offline path and disposable local Supabase checks have been verified; no hosted deployment or live provider run has been verified. Provider use remains subject to your own agreement and local law.
+This guide covers one operator running PRORACLE on their own machine and accounts. Nothing here uses the maintainer's credentials, database, or bot. The offline path, disposable local Supabase checks and the maintainer's own hosted deployment (hosted Supabase, live BSD provider, GitHub Actions) have been run; your own setup remains yours to verify. Provider use remains subject to your own agreement and local law.
 
 ## 1. What you need
 

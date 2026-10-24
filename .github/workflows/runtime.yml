@@ -1,7 +1,7 @@
 # Production runtime: the only workflow in this repository that can read secrets.
 #
 # Design rules (see docs/MAINTAINING.md):
-#   - triggers are only `workflow_dispatch` and (once enabled) `schedule`; never a pull request,
+#   - triggers are only `schedule` and `workflow_dispatch`; never a pull request,
 #     `pull_request_target` or `workflow_run`, so a fork or an open PR can never reach a secret
 #   - secrets live in the `production` environment, which is limited to the `main` branch
 #   - the database credential is the restricted `proracle_runtime` role token (secret PRORACLE_RUNTIME_JWT, docs/RESTRICTED_ROLE.md),
@@ -12,6 +12,9 @@
 name: Runtime
 
 on:
+  schedule:
+    # Twice daily, off the :00/:15/:30/:45 marks: 05:37 and 17:37 UTC (08:37 and 20:37 EAT).
+    - cron: "37 5,17 * * *"
   workflow_dispatch:
     inputs:
       execute:
