@@ -1,0 +1,100 @@
+# Production runtime: the only workflow in this repository that can read secrets.
+#
+# Design rules (see docs/MAINTAINING.md):
+#   - triggers are only `workflow_dispatch` and (once enabled) `schedule`; never a pull request,
+#     `pull_request_target` or `workflow_run`, so a fork or an open PR can never reach a secret
+#   - secrets live in the `production` environment, which is limited to the `main` branch
+#   - the database credential is the restricted `proracle_runtime` role token (docs/RESTRICTED_ROLE.md),
+#     never a service-role key
+#   - the token is read-only, every action is pinned to a full commit SHA, and event values reach
+#     scripts only through `env:`, never by interpolation into `run:`
+#   - logs carry fixed codes and counts only (the run and the daily summary print no fixture rows)
+name: Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "Write to the proracle schema (false = preview only, no database writes)"
+        required: true
+        type: boolean
+        default: false
+      history_days:
+        description: "Days of finished results to read as training history (1-365)"
+        required: true
+        type: string
+        default: "3"
+      send_summary:
+        description: "Also send the daily aggregate Telegram summary after the run"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    name: PRORACLE cycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Run PRORACLE (standard library only, nothing to install)
+        env:
+          EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}
+          PRORACLE_HISTORY_DAYS: ${{ github.event_name == 'schedule' && '2' || github.event.inputs.history_days }}
+          PRORACLE_DB_SCHEMA: proracle
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
+          BSD_API_TOKEN: ${{ secrets.BSD_API_KEY }}
+        run: |
+          if [ "$EXECUTE" = "true" ]; then MODE=--execute; else MODE=--dry-run; fi
+          start=$(date +%s)
+          python -m proracle.self_hosted "$MODE"
+          echo "PRORACLE run took $(( $(date +%s) - start )) seconds (mode: $MODE)"
+
+      - name: Daily aggregate summary (morning run, or manual send_summary)
+        # Counts only. A scheduled run sends it only in the 05-06 UTC window.
+        if: success() && (github.event_name == 'schedule' || github.event.inputs.send_summary == 'true')
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          hour=$(date -u +%H)
+          if [ "$EVENT_NAME" = "schedule" ] && [ "$hour" != "05" ] && [ "$hour" != "06" ]; then
+            echo "Scheduled run outside the morning window (UTC hour $hour); summary skipped."
+            exit 0
+          fi
+          python -m proracle.daily_summary --send
+
+      - name: Notify failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl --silent --show-error --max-time 20 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=PRORACLE FAILURE - cycle. Run: ${RUN_URL}" > /dev/null

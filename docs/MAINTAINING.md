@@ -26,29 +26,33 @@ Rules for any workflow in this repository:
 
 - Triggers are only `pull_request`, `push` and, if ever needed, `schedule` or `workflow_dispatch`. Never `pull_request_target` or `workflow_run`, which can run untrusted code with trusted context.
 - `permissions` is declared at the top and grants nothing beyond `contents: read` unless a maintainer has recorded why.
-- No `secrets.*`, no `environment:`, no self-hosted runners, no deployment steps.
+- `ci.yml` never references `secrets.*` or `environment:`. Only `runtime.yml` may, through the `production` environment described below. No self-hosted runners and no deployment steps anywhere.
 - Every third-party action is pinned to a full commit SHA, with the version in a comment. Dependabot proposes updates; read the diff before merging.
 - Expressions that come from the event (titles, branch names, bodies) are never interpolated into `run:` scripts.
 - Every job has a timeout, and the workflow cancels superseded runs.
 
-The release gate in the maintainer's private tooling lints workflows for these rules.
+`tests/test_workflows.py` enforces these rules statically (triggers, SHA pins, read-only permissions, timeouts, secrets only in `runtime.yml`, no event values in `run:` scripts).
 
-## Production stays out of this repository
+## The production runtime and its secrets
 
-Decision: scheduled production runs live in a **private runtime that pulls a reviewed release tag**, not in a workflow here. The repository therefore holds no production secrets, no deployment workflow and no environment secrets, and a pull request or a merged change cannot reach them from GitHub.
+Decision (2026-10-18, supersedes the earlier private-runtime design): the scheduled production run lives in `.github/workflows/runtime.yml` so it uses public-repository Actions minutes. This is safe only because of these limits, which together keep a hostile pull request away from every secret:
 
-Design of the private runtime (no code is shipped here):
+- **Restricted credential.** The database secret is the token of the `proracle_runtime` Postgres role (see [RESTRICTED_ROLE.md](RESTRICTED_ROLE.md)): no access outside the `proracle` schema, no row-level-security bypass, append-only on the history tables. A service-role key is never stored here.
+- **Environment gate.** Secrets are `production` environment secrets, and that environment accepts deployments from `main` only. A branch, a fork or a pull request cannot start a job that receives them.
+- **Triggers.** `runtime.yml` has only `workflow_dispatch` and `schedule`. A scheduled run always uses the default branch.
+- **One merger.** The only way to change what runs with the secrets is a merge to `main`, which needs a pull request with passing CI. Review `runtime.yml` and anything it imports as security-sensitive code.
+- **Public logs.** Logs carry fixed codes and counts only. They do reveal run timing and aggregate counts.
+- **Rotation.** The role token is revocable instantly (`revoke proracle_runtime from authenticator;`) without touching the project's signing secret. Rotate it before it expires and after any suspected exposure.
 
-- It checks out a specific tag that the maintainer has reviewed and that points to a commit on `main`, and refuses to run anything else.
-- Credentials live only in that runtime's environment or secret store.
-- One run at a time (a lock), a hard per-run cost cap for any paid call, and an alert when a run fails or does not start.
-- Failures produce explicit failure records and never a partial prediction.
+Required `production` environment secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (the role token), `SUPABASE_API_KEY` (the publishable key), `BSD_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+
+Failures produce explicit failure records and never a partial prediction. A failed run sends a Telegram failure notice.
 
 ## Budget and concurrency controls
 
 - CI: 10-minute job timeouts, superseded runs cancelled, two Python versions only.
 - Production: a single concurrent run, a documented schedule, a cost cap per run, and a monthly budget alert on every paid account.
-- No scheduled job in this repository: nothing here should consume quota unattended.
+- The only scheduled job is `runtime.yml` (once enabled): one concurrent run, a 15-minute timeout, and public-repository minutes.
 
 ## Repository settings checklist (apply and verify at publication)
 
@@ -66,4 +70,4 @@ Applied on 2026-10-17, when the repository was published. Read each setting back
 
 ## Releases
 
-Tag a release only from a commit on `main` that passed CI and that the maintainer has reviewed. The private runtime pulls tags, not branch heads.
+Tag a release only from a commit on `main` that passed CI and that the maintainer has reviewed. The production runtime runs the default branch; review every change to `runtime.yml` and the modules it runs as security-sensitive.

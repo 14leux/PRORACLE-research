@@ -4,4 +4,4 @@ Do not report a suspected vulnerability or exposed credential in a public issue.
 
 Do not send secrets through public discussions, pull requests, or issue attachments. If you accidentally publish a credential, revoke or rotate it immediately; deleting the visible text does not remove it from Git history or notifications.
 
-Contributor workflows are intended to use synthetic test data and no production secrets. Please report any path that appears to let an untrusted pull request access credentials, private data, or production services.
+Contributor and pull-request workflows use synthetic test data and no secrets. Production secrets exist only in the `production` environment (limited to `main`), read by `runtime.yml`, and hold a restricted database role's token (see docs/MAINTAINING.md). Please report any path that appears to let an untrusted pull request access credentials, private data, or production services.
