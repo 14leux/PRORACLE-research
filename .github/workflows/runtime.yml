@@ -14,7 +14,8 @@ name: Runtime
 on:
   schedule:
     # Twice daily, off the :00/:15/:30/:45 marks: 05:37 and 17:37 UTC (08:37 and 20:37 EAT).
-    - cron: "37 5,17 * * *"
+    - cron: "37 5 * * *"
+    - cron: "37 17 * * *"
   workflow_dispatch:
     inputs:
       execute:
@@ -72,23 +73,17 @@ jobs:
           python -m proracle.self_hosted "$MODE"
           echo "PRORACLE run took $(( $(date +%s) - start )) seconds (mode: $MODE)"
 
-      - name: Daily aggregate summary (morning run, or manual send_summary)
-        # Counts only. A scheduled run sends it only in the 05-06 UTC window.
-        if: success() && (github.event_name == 'schedule' || github.event.inputs.send_summary == 'true')
+      - name: Daily aggregate summary (morning schedule, or manual send_summary)
+        # The schedule value identifies the morning slot even when GitHub starts it late.
+        # The evening slot never sends a second daily summary.
+        if: success() && ((github.event_name == 'schedule' && github.event.schedule == '37 5 * * *') || (github.event_name == 'workflow_dispatch' && github.event.inputs.send_summary == 'true'))
         env:
-          EVENT_NAME: ${{ github.event_name }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.PRORACLE_RUNTIME_JWT }}
           SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          hour=$(date -u +%H)
-          if [ "$EVENT_NAME" = "schedule" ] && [ "$hour" != "05" ] && [ "$hour" != "06" ]; then
-            echo "Scheduled run outside the morning window (UTC hour $hour); summary skipped."
-            exit 0
-          fi
-          python -m proracle.daily_summary --send
+        run: python -m proracle.daily_summary --send
 
       - name: Notify failure
         if: failure()
