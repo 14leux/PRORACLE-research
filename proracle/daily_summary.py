@@ -1,7 +1,8 @@
 """PRORACLE daily aggregate summary for Telegram.
 
 Reads the ``proracle`` schema through PostgREST and builds ONE short plain-text message of
-aggregate counts only: no team names, no fixture rows, no provider data. Without ``--send`` it
+aggregate counts and prediction-quality aggregates (accuracy, log loss) only: no team names, no
+fixture rows, no provider data. Without ``--send`` it
 prints the message and exits 0. With ``--send`` it posts via the Telegram Bot API.
 
 Environment: SUPABASE_URL, SUPABASE_SERVICE_KEY (a restricted role's token or a server key),
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -150,6 +152,113 @@ class Reader:
         return data[0][column] if data else None
 
 
+# Prediction-quality block. Model identities as stored in `predictions.model_name`
+# (proracle/rating.py and proracle/baselines.py); kept as literals so this script stays standalone.
+RATING_MODEL = "elo_davidson_recalibrated"
+BASELINE_MODEL = "historical_frequency"
+QUALITY_WINDOWS_DAYS = (7, 14)
+OUTCOMES = ("HOME_WIN", "DRAW", "AWAY_WIN")
+UNIFORM_LOG_LOSS = math.log(3)
+MIN_PAIRED_FOR_INTERVAL = 30
+PROB_FLOOR = 1e-9
+
+
+def _pick(home: float, draw: float, away: float) -> str:
+    """Most probable outcome; ties resolve in HOME_WIN, DRAW, AWAY_WIN order."""
+    best = max(home, draw, away)
+    return "HOME_WIN" if home == best else "DRAW" if draw == best else "AWAY_WIN"
+
+
+def _scored(row: dict, outcome: str) -> tuple[bool, float]:
+    """(pick was right, log loss) for one stored probability triple and the actual outcome."""
+    probs = {
+        "HOME_WIN": float(row["home_win_probability"]),
+        "DRAW": float(row["draw_probability"]),
+        "AWAY_WIN": float(row["away_win_probability"]),
+    }
+    pick = _pick(probs["HOME_WIN"], probs["DRAW"], probs["AWAY_WIN"])
+    return pick == outcome, -math.log(max(probs[outcome], PROB_FLOOR))
+
+
+def quality_stats(predictions: list, results: list, now: datetime) -> dict:
+    """Score settled fixtures. Pure: rows in, aggregates out; no I/O and no wall clock.
+
+    Only the earliest prediction per (fixture, model) made BEFORE kickoff counts, so a later
+    cycle can never leak into the score. A result that another result supersedes is ignored.
+    """
+    superseded = {r.get("supersedes_result_id") for r in results if r.get("supersedes_result_id")}
+    outcome_by_fixture = {
+        r["fixture_id"]: r["actual_outcome"]
+        for r in results
+        if r.get("id") not in superseded and r.get("actual_outcome") in OUTCOMES
+    }
+    first: dict = {}
+    for p in predictions:
+        try:
+            predicted_at, kickoff = _parse_ts(p["predicted_at"]), _parse_ts(p["kickoff_at"])
+            key = (p["fixture_id"], p["model_name"])
+            _scored(p, "DRAW")  # rejects a malformed probability triple
+        except (KeyError, TypeError, ValueError):
+            continue
+        if predicted_at >= kickoff or p["fixture_id"] not in outcome_by_fixture:
+            continue
+        if key not in first or predicted_at < first[key][0]:
+            first[key] = (predicted_at, kickoff, p)
+    windows = {}
+    for days in QUALITY_WINDOWS_DAYS:
+        since = now - timedelta(days=days)
+        per_model: dict = {RATING_MODEL: {}, BASELINE_MODEL: {}}
+        for (fixture_id, model), (_, kickoff, row) in first.items():
+            if model in per_model and since <= kickoff < now:
+                per_model[model][fixture_id] = _scored(row, outcome_by_fixture[fixture_id])
+        entry: dict = {}
+        for model, label in ((RATING_MODEL, "rating"), (BASELINE_MODEL, "baseline")):
+            scored = list(per_model[model].values())
+            entry[f"{label}_n"] = len(scored)
+            if scored:
+                entry[f"{label}_accuracy"] = sum(hit for hit, _ in scored) / len(scored)
+                entry[f"{label}_log_loss"] = sum(loss for _, loss in scored) / len(scored)
+        both = per_model[RATING_MODEL].keys() & per_model[BASELINE_MODEL].keys()
+        gains = [per_model[BASELINE_MODEL][f][1] - per_model[RATING_MODEL][f][1] for f in both]
+        entry["paired_n"] = len(gains)
+        if gains:
+            mean = sum(gains) / len(gains)
+            entry["gain_mean"] = mean
+            if len(gains) >= MIN_PAIRED_FOR_INTERVAL:
+                var = sum((g - mean) ** 2 for g in gains) / (len(gains) - 1)
+                half = 1.96 * math.sqrt(var / len(gains))
+                entry["gain_low"], entry["gain_high"] = mean - half, mean + half
+        windows[days] = entry
+    return windows
+
+
+def collect_quality(reader: Reader, now: datetime) -> dict | None:
+    """Best-effort quality block: a failure here must never stop the rest of the summary."""
+    since = max(QUALITY_WINDOWS_DAYS)
+    try:
+        predictions = reader.rows(
+            "predictions",
+            "fixture_id,model_name,predicted_at,kickoff_at,"
+            "home_win_probability,draw_probability,away_win_probability",
+            {
+                "and": f"(kickoff_at.gte.{iso(now - timedelta(days=since))},kickoff_at.lt.{iso(now)})",
+                "order": "id.asc",
+            },
+        )
+        results = reader.rows(
+            "results",
+            "id,fixture_id,actual_outcome,supersedes_result_id",
+            {
+                "status": "eq.FINAL",
+                "finalized_at": f"gte.{iso(now - timedelta(days=since + 1))}",
+                "order": "id.asc",
+            },
+        )
+    except SummaryError as exc:
+        return {"error": str(exc)}
+    return {"windows": quality_stats(predictions, results, now)}
+
+
 def collect(reader: Reader, now: datetime) -> dict:
     """Fetch the aggregate numbers (the only function that touches the network)."""
     d1 = iso(now - timedelta(hours=24))
@@ -167,11 +276,52 @@ def collect(reader: Reader, now: datetime) -> dict:
         "upcoming_48h": len(upcoming_ids),
         "upcoming_with_prediction": len(upcoming_ids & predicted_ids),
         "newest_prediction_at": reader.newest("predictions", "created_at"),
+        "quality": collect_quality(reader, now),
     }
 
 
 def _parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def _pct(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
+def format_quality(quality: dict | None) -> list[str]:
+    """Plain-text lines for the quality block. Quality metrics only, no betting claims."""
+    if not quality:
+        return []
+    if "error" in quality:
+        return [f"Prediction quality: unavailable ({quality['error']})"]
+    lines = [
+        "Prediction quality (settled fixtures, predicted before kickoff)",
+        "Rating model vs baseline (historical frequency); log loss: lower is better, "
+        f"pure guessing is {UNIFORM_LOG_LOSS:.3f}",
+    ]
+    for days, w in quality["windows"].items():
+        if not w.get("rating_n"):
+            lines.append(f"Last {days}d: no settled fixtures yet")
+            continue
+        line = (
+            f"Last {days}d ({w['rating_n']} fixtures): right {_pct(w['rating_accuracy'])}, "
+            f"log loss {w['rating_log_loss']:.3f}"
+        )
+        if w.get("baseline_n"):
+            line += (
+                f" | baseline {_pct(w['baseline_accuracy'])}, log loss {w['baseline_log_loss']:.3f}"
+            )
+        lines.append(line)
+        if "gain_mean" in w and "gain_low" in w:
+            lines.append(
+                f"  Gain over baseline: {w['gain_mean']:+.3f} "
+                f"(95% interval {w['gain_low']:+.3f} to {w['gain_high']:+.3f}, n={w['paired_n']})"
+            )
+        elif "gain_mean" in w:
+            lines.append(
+                f"  Gain over baseline: {w['gain_mean']:+.3f} (too few fixtures for an interval)"
+            )
+    return lines
 
 
 def format_message(stats: dict, now: datetime) -> str:
@@ -204,6 +354,10 @@ def format_message(stats: dict, now: datetime) -> str:
             )
         else:
             lines.append(f"Newest prediction: {stamp}")
+    quality = format_quality(stats.get("quality"))
+    if quality:
+        lines.append("")
+        lines.extend(quality)
     return "\n".join(lines)
 
 

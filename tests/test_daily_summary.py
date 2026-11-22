@@ -4,6 +4,7 @@
 import contextlib
 import io
 import json
+import math
 import sys
 import unittest
 from datetime import UTC, datetime
@@ -213,6 +214,145 @@ class CollectAndMainTests(unittest.TestCase):
         env = {"SUPABASE_URL": URL, "SUPABASE_SERVICE_KEY": SECRET_KEY}
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(pds.main(["--send"], env, routing_transport(), NOW), 2)
+
+
+def pred(fixture, model, probs, at="2026-10-16T10:00:00Z", kickoff="2026-10-16T18:00:00Z"):
+    home, draw, away = probs
+    return {
+        "fixture_id": fixture,
+        "model_name": model,
+        "predicted_at": at,
+        "kickoff_at": kickoff,
+        "home_win_probability": home,
+        "draw_probability": draw,
+        "away_win_probability": away,
+    }
+
+
+def final(rid, fixture, outcome, supersedes=None):
+    return {
+        "id": rid,
+        "fixture_id": fixture,
+        "actual_outcome": outcome,
+        "supersedes_result_id": supersedes,
+    }
+
+
+class QualityTests(unittest.TestCase):
+    R, B = pds.RATING_MODEL, pds.BASELINE_MODEL
+
+    def test_scores_accuracy_log_loss_and_paired_gain(self):
+        preds = [
+            pred("f1", self.R, (0.6, 0.2, 0.2)),
+            pred("f1", self.B, (0.4, 0.3, 0.3)),
+            pred("f2", self.R, (0.2, 0.2, 0.6)),
+            pred("f2", self.B, (0.4, 0.3, 0.3)),
+        ]
+        results = [final("r1", "f1", "HOME_WIN"), final("r2", "f2", "HOME_WIN")]
+        w = pds.quality_stats(preds, results, NOW)[7]
+        self.assertEqual((w["rating_n"], w["baseline_n"], w["paired_n"]), (2, 2, 2))
+        self.assertAlmostEqual(w["rating_accuracy"], 0.5)
+        self.assertAlmostEqual(w["baseline_accuracy"], 1.0)
+        self.assertAlmostEqual(w["rating_log_loss"], (-math.log(0.6) - math.log(0.2)) / 2)
+        self.assertAlmostEqual(
+            w["gain_mean"],
+            ((-math.log(0.4) + math.log(0.6)) + (-math.log(0.4) + math.log(0.2))) / 2,
+        )
+        self.assertNotIn("gain_low", w)  # two fixtures are too few for an interval
+
+    def test_interval_needs_enough_paired_fixtures(self):
+        preds, results = [], []
+        for i in range(40):
+            preds.append(pred(f"f{i}", self.R, (0.5, 0.25, 0.25)))
+            preds.append(pred(f"f{i}", self.B, (0.4, 0.3, 0.3)))
+            results.append(final(f"r{i}", f"f{i}", "HOME_WIN" if i % 3 else "AWAY_WIN"))
+        w = pds.quality_stats(preds, results, NOW)[7]
+        self.assertEqual(w["paired_n"], 40)
+        self.assertLess(w["gain_low"], w["gain_mean"])
+        self.assertLess(w["gain_mean"], w["gain_high"])
+
+    def test_only_first_prematch_prediction_counts(self):
+        preds = [
+            pred("f1", self.R, (0.2, 0.2, 0.6), at="2026-10-16T09:00:00Z"),  # earliest: wrong
+            pred("f1", self.R, (0.9, 0.05, 0.05), at="2026-10-16T12:00:00Z"),  # later: ignored
+            pred("f1", self.R, (0.9, 0.05, 0.05), at="2026-10-16T19:00:00Z"),  # after kickoff
+        ]
+        w = pds.quality_stats(preds, [final("r1", "f1", "HOME_WIN")], NOW)[7]
+        self.assertEqual(w["rating_n"], 1)
+        self.assertAlmostEqual(w["rating_accuracy"], 0.0)
+
+    def test_after_kickoff_unsettled_and_out_of_window_are_ignored(self):
+        preds = [
+            pred("late", self.R, (0.5, 0.3, 0.2), at="2026-10-16T19:00:00Z"),
+            pred("open", self.R, (0.5, 0.3, 0.2)),
+            pred(
+                "old",
+                self.R,
+                (0.5, 0.3, 0.2),
+                at="2026-09-01T10:00:00Z",
+                kickoff="2026-09-01T18:00:00Z",
+            ),
+        ]
+        results = [final("r1", "late", "DRAW"), final("r3", "old", "DRAW")]
+        windows = pds.quality_stats(preds, results, NOW)
+        self.assertEqual((windows[7]["rating_n"], windows[14]["rating_n"]), (0, 0))
+
+    def test_superseded_and_void_results(self):
+        preds = [pred("f1", self.R, (0.6, 0.2, 0.2)), pred("f2", self.R, (0.6, 0.2, 0.2))]
+        results = [
+            final("r1", "f1", "AWAY_WIN"),
+            final("r2", "f1", "HOME_WIN", supersedes="r1"),
+            final("r3", "f2", "VOID"),
+        ]
+        w = pds.quality_stats(preds, results, NOW)[7]
+        self.assertEqual(w["rating_n"], 1)
+        self.assertAlmostEqual(w["rating_accuracy"], 1.0)
+
+    def test_malformed_rows_are_skipped(self):
+        bad = [{"fixture_id": "f1"}, {**pred("f1", self.R, (0.5, 0.3, 0.2)), "kickoff_at": "x"}]
+        w = pds.quality_stats(bad, [final("r1", "f1", "DRAW")], NOW)[7]
+        self.assertEqual(w["rating_n"], 0)
+
+    def test_message_block(self):
+        windows = {
+            7: {
+                "rating_n": 400,
+                "rating_accuracy": 0.485,
+                "rating_log_loss": 1.0435,
+                "baseline_n": 400,
+                "baseline_accuracy": 0.433,
+                "baseline_log_loss": 1.0723,
+                "paired_n": 400,
+                "gain_mean": 0.0288,
+                "gain_low": 0.0,
+                "gain_high": 0.0576,
+            },
+            14: {"rating_n": 0, "baseline_n": 0, "paired_n": 0},
+        }
+        msg = pds.format_message(stats(quality={"windows": windows}), NOW)
+        self.assertIn("Last 7d (400 fixtures): right 48.5%, log loss 1.044", msg)
+        self.assertIn("baseline 43.3%, log loss 1.072", msg)
+        self.assertIn("Gain over baseline: +0.029 (95% interval +0.000 to +0.058, n=400)", msg)
+        self.assertIn("Last 14d: no settled fixtures yet", msg)
+        self.assertIn("pure guessing is 1.099", msg)
+
+    def test_message_without_or_with_failed_quality(self):
+        self.assertNotIn("Prediction quality", pds.format_message(stats(), NOW))
+        msg = pds.format_message(stats(quality={"error": "TooManyRows"}), NOW)
+        self.assertIn("Prediction quality: unavailable (TooManyRows)", msg)
+
+    def test_quality_failure_does_not_stop_the_summary(self):
+        base = routing_transport()
+
+        def transport(method, url, headers, body=None, timeout=15):
+            if "/predictions?" in url and "model_name" in url:
+                raise pds.TransportError("HTTPError", 400)
+            return base(method, url, headers, body, timeout)
+
+        reader = pds.Reader(URL, SECRET_KEY, transport, lambda s: None)
+        got = pds.collect(reader, NOW)
+        self.assertEqual(got["quality"], {"error": "HTTPError HTTP 400"})
+        self.assertEqual(got["failures_by_code"], {"SOURCE_TIMEOUT": 2})
 
 
 if __name__ == "__main__":
