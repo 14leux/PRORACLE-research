@@ -1,8 +1,8 @@
 """PRORACLE daily aggregate summary for Telegram.
 
 Reads the ``proracle`` schema through PostgREST and builds ONE short plain-text message of
-aggregate counts and prediction-quality aggregates (accuracy, log loss) only: no team names, no
-fixture rows, no provider data. Without ``--send`` it
+aggregate counts, prediction-quality aggregates (accuracy, log loss) and a top-5 daily picks
+calibration scoreboard only: no team names, no fixture rows, no provider data. Without ``--send`` it
 prints the message and exits 0. With ``--send`` it posts via the Telegram Bot API.
 
 Environment: SUPABASE_URL, SUPABASE_SERVICE_KEY (a restricted role's token or a server key),
@@ -161,6 +161,8 @@ OUTCOMES = ("HOME_WIN", "DRAW", "AWAY_WIN")
 UNIFORM_LOG_LOSS = math.log(3)
 MIN_PAIRED_FOR_INTERVAL = 30
 PROB_FLOOR = 1e-9
+SCOREBOARD_TOP_N = 5
+MIN_SCOREBOARD_SETTLED = 20
 
 
 def _pick(home: float, draw: float, away: float) -> str:
@@ -180,18 +182,23 @@ def _scored(row: dict, outcome: str) -> tuple[bool, float]:
     return pick == outcome, -math.log(max(probs[outcome], PROB_FLOOR))
 
 
+def _final_outcomes(results: list) -> dict:
+    """fixture_id -> actual outcome, ignoring a result that another result supersedes."""
+    superseded = {r.get("supersedes_result_id") for r in results if r.get("supersedes_result_id")}
+    return {
+        r["fixture_id"]: r["actual_outcome"]
+        for r in results
+        if r.get("id") not in superseded and r.get("actual_outcome") in OUTCOMES
+    }
+
+
 def quality_stats(predictions: list, results: list, now: datetime) -> dict:
     """Score settled fixtures. Pure: rows in, aggregates out; no I/O and no wall clock.
 
     Only the earliest prediction per (fixture, model) made BEFORE kickoff counts, so a later
     cycle can never leak into the score. A result that another result supersedes is ignored.
     """
-    superseded = {r.get("supersedes_result_id") for r in results if r.get("supersedes_result_id")}
-    outcome_by_fixture = {
-        r["fixture_id"]: r["actual_outcome"]
-        for r in results
-        if r.get("id") not in superseded and r.get("actual_outcome") in OUTCOMES
-    }
+    outcome_by_fixture = _final_outcomes(results)
     first: dict = {}
     for p in predictions:
         try:
@@ -232,34 +239,115 @@ def quality_stats(predictions: list, results: list, now: datetime) -> dict:
     return windows
 
 
+def scoreboard_stats(predictions: list, results: list, now: datetime) -> dict:
+    """Top-5 daily picks scoreboard. Pure: rows in, aggregates out; no I/O and no wall clock.
+
+    For each COMPLETE UTC day in the window (today is excluded), take the rating model's earliest
+    pre-kickoff prediction for every fixture that kicked off that day, rank by stated confidence
+    (the highest of its three probabilities; ties go to the lower fixture id) and keep the top
+    SCOREBOARD_TOP_N. The ranking uses only what was stored before kickoff and does not look at
+    results, so fixtures not settled yet stay in the ranking and are counted as unsettled.
+    A calibration report card: stated probability against how often the pick was right.
+    """
+    outcome_by_fixture = _final_outcomes(results)
+    first: dict = {}
+    for p in predictions:
+        try:
+            if p["model_name"] != RATING_MODEL:
+                continue
+            predicted_at, kickoff = _parse_ts(p["predicted_at"]), _parse_ts(p["kickoff_at"])
+            probs = (
+                float(p["home_win_probability"]),
+                float(p["draw_probability"]),
+                float(p["away_win_probability"]),
+            )
+            fixture_id = p["fixture_id"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if predicted_at >= kickoff:
+            continue
+        if fixture_id not in first or predicted_at < first[fixture_id][0]:
+            first[fixture_id] = (predicted_at, kickoff, probs)
+    today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    windows = {}
+    for days in QUALITY_WINDOWS_DAYS:
+        start = today - timedelta(days=days)
+        by_day: dict = {}
+        for fixture_id, (_, kickoff, probs) in first.items():
+            if start <= kickoff < today:
+                by_day.setdefault(kickoff.date(), []).append((max(probs), str(fixture_id), probs))
+        picks = hits = 0
+        stated = 0.0
+        unsettled = 0
+        for candidates in by_day.values():
+            candidates.sort(key=lambda c: (-c[0], c[1]))
+            for confidence, fixture_id, probs in candidates[:SCOREBOARD_TOP_N]:
+                outcome = outcome_by_fixture.get(fixture_id)
+                if outcome is None:
+                    unsettled += 1
+                    continue
+                picks += 1
+                stated += confidence
+                hits += _pick(*probs) == outcome
+        entry: dict = {"settled": picks, "unsettled": unsettled, "days": len(by_day)}
+        if picks:
+            entry.update(
+                hits=hits,
+                hit_rate=hits / picks,
+                mean_stated=stated / picks,
+                expected_hits=stated,
+            )
+        windows[days] = entry
+    return windows
+
+
+def read_quality_inputs(reader: Reader, now: datetime) -> tuple[list, list]:
+    """Rows shared by the quality block and the scoreboard (raises SummaryError on a failed read).
+
+    The read reaches one day further back than the longest window so the scoreboard's oldest day
+    is complete; quality_stats still filters each window by kickoff, so its numbers are unchanged.
+    """
+    since = max(QUALITY_WINDOWS_DAYS) + 1
+    predictions = reader.rows(
+        "predictions",
+        "fixture_id,model_name,predicted_at,kickoff_at,"
+        "home_win_probability,draw_probability,away_win_probability",
+        {
+            "and": f"(kickoff_at.gte.{iso(now - timedelta(days=since))},kickoff_at.lt.{iso(now)})",
+            # Server-side filter: only the two stored model identities are ever read, so a
+            # new identity can never inflate the page count or hit the row cap.
+            "model_name": f"in.({RATING_MODEL},{BASELINE_MODEL})",
+            "order": "id.asc",
+        },
+    )
+    results = reader.rows(
+        "results",
+        "id,fixture_id,actual_outcome,supersedes_result_id",
+        {
+            "status": "eq.FINAL",
+            "finalized_at": f"gte.{iso(now - timedelta(days=since + 1))}",
+            "order": "id.asc",
+        },
+    )
+    return predictions, results
+
+
+def collect_quality_blocks(reader: Reader, now: datetime) -> tuple[dict, dict]:
+    """(quality, scoreboard) from ONE read. A failure here must never stop the rest of the
+    summary: both blocks then report the same short error."""
+    try:
+        predictions, results = read_quality_inputs(reader, now)
+    except SummaryError as exc:
+        return {"error": str(exc)}, {"error": str(exc)}
+    return (
+        {"windows": quality_stats(predictions, results, now)},
+        {"windows": scoreboard_stats(predictions, results, now)},
+    )
+
+
 def collect_quality(reader: Reader, now: datetime) -> dict | None:
     """Best-effort quality block: a failure here must never stop the rest of the summary."""
-    since = max(QUALITY_WINDOWS_DAYS)
-    try:
-        predictions = reader.rows(
-            "predictions",
-            "fixture_id,model_name,predicted_at,kickoff_at,"
-            "home_win_probability,draw_probability,away_win_probability",
-            {
-                "and": f"(kickoff_at.gte.{iso(now - timedelta(days=since))},kickoff_at.lt.{iso(now)})",
-                # Server-side filter: only the two stored model identities are ever read, so a
-                # new identity can never inflate the page count or hit the row cap.
-                "model_name": f"in.({RATING_MODEL},{BASELINE_MODEL})",
-                "order": "id.asc",
-            },
-        )
-        results = reader.rows(
-            "results",
-            "id,fixture_id,actual_outcome,supersedes_result_id",
-            {
-                "status": "eq.FINAL",
-                "finalized_at": f"gte.{iso(now - timedelta(days=since + 1))}",
-                "order": "id.asc",
-            },
-        )
-    except SummaryError as exc:
-        return {"error": str(exc)}
-    return {"windows": quality_stats(predictions, results, now)}
+    return collect_quality_blocks(reader, now)[0]
 
 
 def collect(reader: Reader, now: datetime) -> dict:
@@ -269,6 +357,7 @@ def collect(reader: Reader, now: datetime) -> dict:
     upcoming_ids = {r["id"] for r in reader.rows("fixtures", "id", window)}
     predicted_ids = {r["fixture_id"] for r in reader.rows("predictions", "fixture_id", window)}
     failures = reader.rows("prediction_failures", "error_code", {"occurred_at": f"gte.{d1}"})
+    quality, scoreboard = collect_quality_blocks(reader, now)
     return {
         "fixtures_total": reader.count("fixtures"),
         "results_final_24h": reader.count(
@@ -279,7 +368,8 @@ def collect(reader: Reader, now: datetime) -> dict:
         "upcoming_48h": len(upcoming_ids),
         "upcoming_with_prediction": len(upcoming_ids & predicted_ids),
         "newest_prediction_at": reader.newest("predictions", "created_at"),
-        "quality": collect_quality(reader, now),
+        "quality": quality,
+        "scoreboard": scoreboard,
     }
 
 
@@ -327,6 +417,37 @@ def format_quality(quality: dict | None) -> list[str]:
     return lines
 
 
+def format_scoreboard(scoreboard: dict | None) -> list[str]:
+    """Plain-text lines for the top-5 scoreboard: a calibration report card, no betting claims."""
+    if not scoreboard:
+        return []
+    if "error" in scoreboard:
+        return [f"Top-5 scoreboard: unavailable ({scoreboard['error']})"]
+    lines = [
+        "Top-5 daily picks scoreboard (a calibration report card, not evidence of an edge)",
+        (
+            f"Each complete UTC day's {SCOREBOARD_TOP_N} most confident pre-kickoff "
+            "rating-model picks, right-rate vs the probability the model stated"
+        ),
+    ]
+    for days, w in scoreboard["windows"].items():
+        if not w.get("settled"):
+            pending = f" ({w['unsettled']} not settled yet)" if w.get("unsettled") else ""
+            lines.append(f"Last {days} days: no settled picks yet{pending}")
+            continue
+        line = (
+            f"Last {days} days: {w['hits']} of {w['settled']} picks right ({_pct(w['hit_rate'])}); "
+            f"stated probability averaged {_pct(w['mean_stated'])} "
+            f"(about {w['expected_hits']:.0f} expected)"
+        )
+        if w.get("unsettled"):
+            line += f"; {w['unsettled']} not settled yet"
+        lines.append(line)
+        if w["settled"] < MIN_SCOREBOARD_SETTLED:
+            lines.append(f"  Only {w['settled']} settled picks: too few to read much into")
+    return lines
+
+
 def format_message(stats: dict, now: datetime) -> str:
     """Pure formatting from already-fetched numbers; no I/O, no wall clock."""
     lines = [f"PRORACLE daily summary {now.astimezone(UTC):%Y-%m-%d %H:%M} UTC"]
@@ -361,6 +482,10 @@ def format_message(stats: dict, now: datetime) -> str:
     if quality:
         lines.append("")
         lines.extend(quality)
+    scoreboard = format_scoreboard(stats.get("scoreboard"))
+    if scoreboard:
+        lines.append("")
+        lines.extend(scoreboard)
     return "\n".join(lines)
 
 
