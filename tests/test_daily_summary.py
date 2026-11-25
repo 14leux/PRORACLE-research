@@ -371,5 +371,167 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(got["failures_by_code"], {"SOURCE_TIMEOUT": 2})
 
 
+def day_preds(day, fixtures, model=pds.RATING_MODEL):
+    """Pre-kickoff predictions for kickoffs on `day` ('2026-10-16'); fixtures = [(id, confidence)].
+    The pick is HOME_WIN with the given confidence, the rest split evenly."""
+    return [
+        pred(
+            fid,
+            model,
+            (conf, (1 - conf) / 2, (1 - conf) / 2),
+            at=f"{day}T08:00:00Z",
+            kickoff=f"{day}T18:00:00Z",
+        )
+        for fid, conf in fixtures
+    ]
+
+
+class ScoreboardTests(unittest.TestCase):
+    R = pds.RATING_MODEL
+
+    def board(self, preds, results, window=7):
+        return pds.scoreboard_stats(preds, results, NOW)[window]
+
+    def test_equal_confidence_ties_go_to_the_lower_fixture_id(self):
+        preds = day_preds("2026-10-16", [(f"f{i}", 0.6) for i in range(1, 8)])
+        results = [
+            final(f"r{i}", f"f{i}", "HOME_WIN" if i <= 5 else "AWAY_WIN") for i in range(1, 8)
+        ]
+        w = self.board(preds, results)
+        # f1..f5 are kept (all right); f6 and f7 are dropped, so their misses never count
+        self.assertEqual((w["settled"], w["hits"], w["unsettled"], w["days"]), (5, 5, 0, 1))
+        self.assertAlmostEqual(w["mean_stated"], 0.6)
+        self.assertAlmostEqual(w["expected_hits"], 3.0)
+
+    def test_the_five_most_confident_are_kept_per_day(self):
+        confs = {"a1": 0.5, "a2": 0.9, "a3": 0.7, "a4": 0.6, "a5": 0.8, "a6": 0.55}
+        preds = day_preds("2026-10-16", list(confs.items()))
+        results = [final(f"r{k}", k, "HOME_WIN") for k in confs]
+        w = self.board(preds, results)
+        self.assertEqual(w["settled"], 5)
+        self.assertAlmostEqual(w["mean_stated"], (0.9 + 0.8 + 0.7 + 0.6 + 0.55) / 5)
+
+    def test_each_day_is_ranked_on_its_own(self):
+        preds = day_preds("2026-10-15", [(f"d{i}", 0.5 + i / 100) for i in range(6)])
+        preds += day_preds("2026-10-16", [(f"e{i}", 0.5 + i / 100) for i in range(6)])
+        results = [final(f"r{p['fixture_id']}", p["fixture_id"], "HOME_WIN") for p in preds]
+        w = self.board(preds, results)
+        self.assertEqual((w["settled"], w["days"]), (10, 2))
+
+    def test_unsettled_picks_keep_their_place_and_are_counted_apart(self):
+        preds = day_preds("2026-10-16", [("u", 0.95)] + [(f"f{i}", 0.6) for i in range(1, 6)])
+        results = [final(f"r{i}", f"f{i}", "HOME_WIN") for i in range(1, 6)]
+        w = self.board(preds, results)
+        # u (no result yet) is ranked first, so only f1..f4 fill the other slots
+        self.assertEqual((w["settled"], w["unsettled"], w["hits"]), (4, 1, 4))
+
+    def test_window_covers_complete_utc_days_only(self):
+        def at(kickoff):
+            return pred("x", self.R, (0.7, 0.2, 0.1), at="2026-10-09T00:00:00Z", kickoff=kickoff)
+
+        edge = [
+            ("a", at("2026-10-11T00:00:00Z"), 7),  # first instant of the oldest day: in
+            ("b", at("2026-10-10T23:59:59Z"), 14),  # just before it: out of 7d, in 14d
+            ("c", at("2026-10-18T03:00:00Z"), None),  # today is incomplete: in neither
+        ]
+        for name, row, only_from in edge:
+            row = {**row, "fixture_id": name}
+            results = [final("r", name, "HOME_WIN")]
+            for window in (7, 14):
+                got = self.board([row], results, window)["settled"]
+                expected = 1 if only_from is not None and window >= only_from else 0
+                self.assertEqual(got, expected, (name, window))
+
+    def test_only_the_first_prematch_rating_prediction_counts(self):
+        preds = [
+            pred("f1", self.R, (0.9, 0.05, 0.05), at="2026-10-16T08:00:00Z"),
+            pred("f1", self.R, (0.2, 0.3, 0.5), at="2026-10-16T12:00:00Z"),  # later cycle
+            pred("f1", self.R, (0.2, 0.3, 0.5), at="2026-10-16T18:30:00Z"),  # after kickoff
+            pred("f1", pds.BASELINE_MODEL, (0.99, 0.005, 0.005), at="2026-10-16T07:00:00Z"),
+        ]
+        w = self.board(preds, [final("r1", "f1", "HOME_WIN")])
+        self.assertEqual((w["settled"], w["hits"]), (1, 1))
+        self.assertAlmostEqual(w["mean_stated"], 0.9)
+
+    def test_superseded_result_is_ignored_and_a_miss_is_counted(self):
+        preds = day_preds("2026-10-16", [("f1", 0.7)])
+        results = [final("r1", "f1", "HOME_WIN"), final("r2", "f1", "AWAY_WIN", supersedes="r1")]
+        w = self.board(preds, results)
+        self.assertEqual((w["settled"], w["hits"]), (1, 0))
+        self.assertEqual(w["hit_rate"], 0.0)
+
+    def test_malformed_rows_and_empty_input(self):
+        bad_draw = {**day_preds("2026-10-16", [("f2", 0.6)])[0], "draw_probability": "x"}
+        bad = [{"fixture_id": "f1"}, bad_draw]
+        self.assertEqual(self.board(bad, []), {"settled": 0, "unsettled": 0, "days": 0})
+        self.assertEqual(self.board([], []), {"settled": 0, "unsettled": 0, "days": 0})
+
+    def test_message_block_has_the_label_and_the_numbers(self):
+        confs = [(f"f{i}", 0.7) for i in range(1, 6)]
+        preds = day_preds("2026-10-16", confs)
+        results = [
+            final(f"r{i}", f"f{i}", "HOME_WIN" if i <= 3 else "AWAY_WIN") for i in range(1, 6)
+        ]
+        board = {"windows": pds.scoreboard_stats(preds, results, NOW)}
+        msg = pds.format_message(stats(scoreboard=board), NOW)
+        self.assertIn("not evidence of an edge", msg)
+        self.assertIn("calibration report card", msg)
+        self.assertIn("Last 7 days: 3 of 5 picks right (60.0%);", msg)
+        self.assertIn("stated probability averaged 70.0%", msg)
+        self.assertIn("(about 4 expected)", msg)
+        self.assertIn("Only 5 settled picks: too few to read much into", msg)
+        self.assertIn("Last 14 days: 3 of 5 picks right", msg)
+
+    def test_message_block_with_enough_picks_has_no_thin_note(self):
+        lines = pds.format_scoreboard(
+            {"windows": {7: {"settled": 30, "unsettled": 2, "days": 7, "hits": 20,
+                             "hit_rate": 20 / 30, "mean_stated": 0.65, "expected_hits": 19.5}}}
+        )
+        text = "\n".join(lines)
+        self.assertIn("20 of 30 picks right (66.7%)", text)
+        self.assertIn("2 not settled yet", text)
+        self.assertNotIn("too few", text)
+
+    def test_message_block_with_no_settled_picks_and_when_absent_or_failed(self):
+        thin = {"windows": {7: {"settled": 0, "unsettled": 2, "days": 1}}}
+        text = "\n".join(pds.format_scoreboard(thin))
+        self.assertIn("Last 7 days: no settled picks yet (2 not settled yet)", text)
+        self.assertEqual(pds.format_scoreboard(None), [])
+        self.assertNotIn("scoreboard", pds.format_message(stats(), NOW).lower())
+        failed = pds.format_message(stats(scoreboard={"error": "TooManyRows"}), NOW)
+        self.assertIn("Top-5 scoreboard: unavailable (TooManyRows)", failed)
+
+    def test_a_failed_read_only_blanks_the_quality_blocks(self):
+        base = routing_transport()
+
+        def transport(method, url, headers, body=None, timeout=15):
+            if "/predictions?" in url and "model_name" in url:
+                raise pds.TransportError("HTTPError", 400)
+            return base(method, url, headers, body, timeout)
+
+        got = pds.collect(pds.Reader(URL, SECRET_KEY, transport, lambda s: None), NOW)
+        self.assertEqual(got["scoreboard"], {"error": "HTTPError HTTP 400"})
+        self.assertEqual(got["quality"], {"error": "HTTPError HTTP 400"})
+        self.assertEqual(got["failures_by_code"], {"SOURCE_TIMEOUT": 2})
+        msg = pds.format_message(got, NOW)
+        self.assertIn("Top-5 scoreboard: unavailable (HTTPError HTTP 400)", msg)
+        self.assertIn("Upcoming fixtures, next 48h: 3", msg)
+
+    def test_one_read_feeds_both_blocks_and_stays_model_filtered(self):
+        base = routing_transport()
+        reads: list[str] = []
+
+        def transport(method, url, headers, body=None, timeout=15):
+            if "/predictions?" in url and "home_win_probability" in url:
+                reads.append(url)
+            return base(method, url, headers, body, timeout)
+
+        got = pds.collect(pds.Reader(URL, SECRET_KEY, transport, lambda s: None), NOW)
+        self.assertEqual(len(reads), 1)
+        self.assertIn("model_name=in.(", reads[0])
+        self.assertIn("windows", got["scoreboard"])
+        self.assertIn("windows", got["quality"])
+
+
 if __name__ == "__main__":
     unittest.main()
