@@ -22,6 +22,8 @@ Set these in the process environment of the shell or scheduler that runs the com
 | `PRORACLE_DB_SCHEMA` | self-hosted runner, retrospective | Defaults to `proracle`; use only a schema created by the PRORACLE migrations and exposed in your Supabase API settings. |
 | `PRORACLE_LOOKAHEAD_DAYS` | self-hosted runner | Optional. Days of upcoming fixtures to fetch; integer 1 to 14, default 2. |
 | `PRORACLE_HISTORY_DAYS` | self-hosted runner | Optional. Days of finished results to fetch as training history; integer 1 to 365, default 30. |
+| `PRORACLE_CAPTURE_SCORES` | self-hosted runner | Optional, off unless exactly `1`. Capture match scores and league countries each run. Needs the P0 capture migration; see [TICKETS.md](TICKETS.md). |
+| `PRORACLE_DAILY_TICKET` | self-hosted runner | Optional, off unless exactly `1`. Build the daily simulated ticket after the predictions. Needs the P0 capture migration; see [TICKETS.md](TICKETS.md). |
 | `TELEGRAM_BOT_TOKEN` | `proracle.telegram_report` | From BotFather. |
 | `TELEGRAM_CHAT_ID` | `proracle.telegram_report` | Your own chat or channel id. |
 

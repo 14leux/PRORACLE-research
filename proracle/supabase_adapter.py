@@ -7,7 +7,7 @@ import math
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -23,6 +23,24 @@ from proracle.retrospective import (
     StoredPrediction,
     current_training_results,
 )
+from proracle.ticket import Candidate, DrawCounts, Ticket
+
+_TABLES = frozenset(
+    {
+        "fixtures",
+        "predictions",
+        "results",
+        "prediction_failures",
+        # P0 capture tables (migration 20261126000000); the runtime role can only read and insert.
+        "match_scores",
+        "competition_countries",
+        "tickets",
+        "ticket_fixtures",
+        "ticket_arm_picks",
+    }
+)
+# Insert, and quietly keep the row that is already there when the key already exists.
+_IGNORE_DUPLICATES = "resolution=ignore-duplicates,return=minimal"
 
 
 class SupabaseStoreError(Exception):
@@ -133,11 +151,11 @@ class SupabaseRESTStore:
         table: str,
         *,
         query: Sequence[tuple[str, str]] = (),
-        payload: Mapping[str, object] | None = None,
+        payload: Mapping[str, object] | Sequence[Mapping[str, object]] | None = None,
         prefer: str | None = None,
         item_range: tuple[int, int] | None = None,
     ) -> tuple[Any, Mapping[str, str]]:
-        if table not in {"fixtures", "predictions", "results", "prediction_failures"}:
+        if table not in _TABLES:
             raise ValueError("unsupported PRORACLE table")
         query_string = urlencode(query)
         url = f"{self._base_url}/rest/v1/{table}"
@@ -516,5 +534,231 @@ class SupabaseRESTStore:
             "POST",
             "prediction_failures",
             payload=event.as_dict(),
+            prefer="return=minimal",
+        )
+
+    # --- P0 capture: scores, league countries, the daily simulated ticket -----------------------
+
+    def fixture_ids_by_source_key(self) -> dict[str, str]:
+        """Every stored BSD fixture: source event key -> fixture id (exact-total paginated read)."""
+        rows = self._fetch_all(
+            "fixtures",
+            (("select", "id,source_event_key"), ("source_name", "eq.bsd"), ("order", "id.asc")),
+        )
+        mapping: dict[str, str] = {}
+        for row in rows:
+            key, fixture_id = row.get("source_event_key"), row.get("id")
+            if not isinstance(key, str) or not isinstance(fixture_id, str):
+                raise SupabaseStoreError()
+            mapping[key] = fixture_id
+        return mapping
+
+    def score_fixture_ids(self) -> set[str]:
+        """Fixture ids that already have a stored score."""
+        rows = self._fetch_all("match_scores", (("select", "fixture_id"), ("order", "id.asc")))
+        ids: set[str] = set()
+        for row in rows:
+            fixture_id = row.get("fixture_id")
+            if not isinstance(fixture_id, str):
+                raise SupabaseStoreError()
+            ids.add(fixture_id)
+        return ids
+
+    def append_match_score(
+        self, fixture_id: UUID | str, home_score: int, away_score: int, observed_at: datetime
+    ) -> None:
+        """One regulation-time score per fixture; a fixture that already has one is left as it is."""
+        self._request(
+            "POST",
+            "match_scores",
+            query=(("on_conflict", "fixture_id"),),
+            payload={
+                "fixture_id": str(fixture_id),
+                "home_score": home_score,
+                "away_score": away_score,
+                "source_name": "bsd",
+                "observed_at": _utc_text(observed_at),
+            },
+            prefer=_IGNORE_DUPLICATES,
+        )
+
+    def append_competition_countries(
+        self, countries: Mapping[str, str], observed_at: datetime
+    ) -> None:
+        """League country labels in one request; ones already stored are left as they are."""
+        if not countries:
+            return
+        self._request(
+            "POST",
+            "competition_countries",
+            query=(("on_conflict", "competition_id"),),
+            payload=[
+                {
+                    "competition_id": competition_id,
+                    "country": country,
+                    "source_name": "bsd",
+                    "observed_at": _utc_text(observed_at),
+                }
+                for competition_id, country in sorted(countries.items())
+            ],
+            prefer=_IGNORE_DUPLICATES,
+        )
+
+    def ticket_exists(self, ticket_date: date, design_version: str) -> bool:
+        value, _ = self._request(
+            "GET",
+            "tickets",
+            query=(
+                ("select", "id"),
+                ("ticket_date", f"eq.{ticket_date.isoformat()}"),
+                ("ticket_kind", "eq.SIMULATED"),
+                ("design_version", f"eq.{design_version}"),
+            ),
+        )
+        return bool(self._rows(value))
+
+    def ticket_pool(self, after: datetime, until: datetime, model_name: str) -> list[Candidate]:
+        """Scheduled fixtures kicking off in (after, until) with their earliest prediction by one model."""
+        rows = self._fetch_all(
+            "predictions",
+            (
+                (
+                    "select",
+                    "id,fixture_id,predicted_at,kickoff_at,model_name,home_win_probability,"
+                    "draw_probability,away_win_probability,"
+                    "fixture:fixtures!predictions_fixture_id_fkey(competition_id,status)",
+                ),
+                ("model_name", f"eq.{model_name}"),
+                ("kickoff_at", f"gt.{_utc_text(after)}"),
+                ("kickoff_at", f"lt.{_utc_text(until)}"),
+                ("order", "predicted_at.asc,id.asc"),
+            ),
+        )
+        pool: dict[str, Candidate] = {}
+        for row in rows:
+            fixture = row.get("fixture")
+            if not isinstance(fixture, Mapping):
+                raise SupabaseStoreError()
+            fixture_id = row.get("fixture_id")
+            if fixture.get("status") != "SCHEDULED" or not isinstance(fixture_id, str):
+                continue
+            if fixture_id in pool:
+                continue  # rows are ordered by predicted_at, so the first one seen is the earliest
+            try:
+                predicted_at = _parse_time(row["predicted_at"], "predicted_at")
+                kickoff_at = _parse_time(row["kickoff_at"], "kickoff_at")
+                probabilities = [
+                    float(row["home_win_probability"]),
+                    float(row["draw_probability"]),
+                    float(row["away_win_probability"]),
+                ]
+                prediction_id = str(row["id"])
+            except (KeyError, TypeError, ValueError):
+                continue  # one malformed row removes that fixture from the pool, nothing more
+            if predicted_at >= kickoff_at or not math.isclose(sum(probabilities), 1.0, abs_tol=1e-4):
+                continue
+            competition = fixture.get("competition_id")
+            pool[fixture_id] = Candidate(
+                fixture_id=fixture_id,
+                competition_id=competition if isinstance(competition, str) else None,
+                kickoff_at=kickoff_at,
+                prediction_id=prediction_id,
+                model_name=model_name,
+                home=probabilities[0],
+                draw=probabilities[1],
+                away=probabilities[2],
+            )
+        return list(pool.values())
+
+    def draw_counts(self) -> DrawCounts:
+        """Matches and draws per competition over every current FINAL result (corrections resolved)."""
+        rows = self._fetch_all(
+            "results",
+            (
+                (
+                    "select",
+                    f"{self._RESULT_VERSION_COLUMNS},fixture:fixtures!results_fixture_id_fkey(kickoff_at,competition_id)",
+                ),
+                ("order", "id.asc"),
+            ),
+        )
+        versions: list[ResultVersion] = []
+        competition_of: dict[str, str] = {}
+        for row in rows:
+            versions.append(self._result_version(row))
+            competition = row["fixture"].get("competition_id")
+            if isinstance(competition, str):
+                competition_of[str(row["fixture_id"])] = competition
+        try:
+            current, _non_final = current_training_results(versions)
+        except ValueError:
+            raise SupabaseStoreError() from None
+        counts: dict[str, list[int]] = {}
+        total = draws = 0
+        for item in current:
+            drawn = int(item.actual_outcome == "DRAW")
+            total += 1
+            draws += drawn
+            competition = competition_of.get(item.fixture_id)
+            if competition is not None:
+                entry = counts.setdefault(competition, [0, 0])
+                entry[0] += 1
+                entry[1] += drawn
+        return DrawCounts(
+            by_competition={key: (value[0], value[1]) for key, value in counts.items()},
+            total=total,
+            draws=draws,
+        )
+
+    def append_ticket(self, ticket: Ticket) -> None:
+        """Write a ticket, its fixtures and its arm picks (three requests, in that order).
+
+        The requests are not one transaction. If a later one fails, the ticket row stays with fewer
+        ticket_fixtures rows than its fixture_count; such a ticket is incomplete and is ignored
+        when arms are scored. The ticket id is fixed by the date, so a rerun cannot create a second.
+        """
+        frozen = _utc_text(ticket.frozen_at)
+        self._request(
+            "POST",
+            "tickets",
+            payload={
+                "id": ticket.ticket_id,
+                "ticket_date": ticket.ticket_date.isoformat(),
+                "ticket_kind": "SIMULATED",
+                "design_version": ticket.design_version,
+                "seed": ticket.seed,
+                "pool_size": ticket.pool_size,
+                "fixture_count": len(ticket.fixtures),
+                "frozen_at": frozen,
+            },
+            prefer="return=minimal",
+        )
+        self._request(
+            "POST",
+            "ticket_fixtures",
+            payload=[
+                {"ticket_id": ticket.ticket_id, "fixture_id": fixture_id, "position": position}
+                for position, fixture_id in enumerate(ticket.fixtures, start=1)
+            ],
+            prefer="return=minimal",
+        )
+        self._request(
+            "POST",
+            "ticket_arm_picks",
+            payload=[
+                {
+                    "ticket_id": ticket.ticket_id,
+                    "fixture_id": pick.fixture_id,
+                    "arm": pick.arm,
+                    "arm_version": pick.arm_version,
+                    "pick": pick.pick,
+                    "forced": pick.forced,
+                    "score": None if pick.score is None else round(pick.score, 10),
+                    "source_prediction_id": pick.source_prediction_id,
+                    "kickoff_at": _utc_text(pick.kickoff_at),
+                    "frozen_at": frozen,
+                }
+                for pick in ticket.picks
+            ],
             prefer="return=minimal",
         )
