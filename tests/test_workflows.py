@@ -59,6 +59,16 @@ class WorkflowRulesTest(unittest.TestCase):
         text = code(ROOT / ".github" / "workflows" / "runtime.yml")
         self.assertNotRegex(text.lower(), r"service_role")
 
+    def test_the_p0_capture_switches_are_set_to_exactly_one_only_in_the_runtime_workflow(self) -> None:
+        for path in WORKFLOWS:
+            text = code(path)
+            if path.name == "runtime.yml":
+                for name in ("PRORACLE_CAPTURE_SCORES", "PRORACLE_DAILY_TICKET"):
+                    self.assertEqual(re.findall(rf'(?m)^\s+{name}: "1"$', text), [f'          {name}: "1"'])
+            else:
+                self.assertNotIn("PRORACLE_CAPTURE_SCORES", text, path.name)
+                self.assertNotIn("PRORACLE_DAILY_TICKET", text, path.name)
+
 
 if __name__ == "__main__":
     unittest.main()
