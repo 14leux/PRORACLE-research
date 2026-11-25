@@ -7,6 +7,7 @@ import json
 import math
 import sys
 import unittest
+import urllib.parse
 from datetime import UTC, datetime
 
 from proracle import daily_summary as pds
@@ -340,6 +341,21 @@ class QualityTests(unittest.TestCase):
         self.assertNotIn("Prediction quality", pds.format_message(stats(), NOW))
         msg = pds.format_message(stats(quality={"error": "TooManyRows"}), NOW)
         self.assertIn("Prediction quality: unavailable (TooManyRows)", msg)
+
+    def test_prediction_read_is_filtered_to_the_two_models_on_the_server(self):
+        base = routing_transport()
+        seen: list[str] = []
+
+        def transport(method, url, headers, body=None, timeout=15):
+            if "/predictions?" in url and "home_win_probability" in url:
+                seen.append(url)
+            return base(method, url, headers, body, timeout)
+
+        reader = pds.Reader(URL, SECRET_KEY, transport, lambda s: None)
+        pds.collect_quality(reader, NOW)
+        self.assertEqual(len(seen), 1)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(seen[0]).query)
+        self.assertEqual(query["model_name"], [f"in.({pds.RATING_MODEL},{pds.BASELINE_MODEL})"])
 
     def test_quality_failure_does_not_stop_the_summary(self):
         base = routing_transport()

@@ -242,6 +242,9 @@ def collect_quality(reader: Reader, now: datetime) -> dict | None:
             "home_win_probability,draw_probability,away_win_probability",
             {
                 "and": f"(kickoff_at.gte.{iso(now - timedelta(days=since))},kickoff_at.lt.{iso(now)})",
+                # Server-side filter: only the two stored model identities are ever read, so a
+                # new identity can never inflate the page count or hit the row cap.
+                "model_name": f"in.({RATING_MODEL},{BASELINE_MODEL})",
                 "order": "id.asc",
             },
         )
