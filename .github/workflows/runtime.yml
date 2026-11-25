@@ -63,6 +63,10 @@ jobs:
           EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}
           PRORACLE_HISTORY_DAYS: ${{ github.event_name == 'schedule' && '2' || github.event.inputs.history_days }}
           PRORACLE_DB_SCHEMA: proracle
+          # P0 capture (docs/TICKETS.md): needs migration 20261126000000, applied to this project
+          # on 2026-11-26. A preview (--dry-run) never writes, whatever these say.
+          PRORACLE_CAPTURE_SCORES: "1"
+          PRORACLE_DAILY_TICKET: "1"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.PRORACLE_RUNTIME_JWT }}
           SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
