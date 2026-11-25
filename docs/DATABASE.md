@@ -7,6 +7,8 @@ PRORACLE's migrations create a dedicated `proracle` schema and four installation
 - `results` stores final, abandoned, cancelled, or void result records. A correction is a new row linked to the row it supersedes.
 - `prediction_failures` stores allowlisted, append-only failure metadata. It has no free-form message or raw provider/model response field.
 
+The P0 capture migration (`20261126000000_proracle_p0_capture.sql`) adds five more append-only tables: `match_scores`, `competition_countries`, `tickets`, `ticket_fixtures` and `ticket_arm_picks`. They are optional, filled only when the capture switches are on, and described in [TICKETS.md](TICKETS.md).
+
 The migrations do not store odds, stakes, bankroll activity, raw provider responses, or feature snapshots. Store provider identifiers only when the operator's source terms permit it. `input_snapshot_hash` is an installation-local audit field; do not publish it without considering whether the underlying inputs could be guessed.
 
 ## Start a disposable local database

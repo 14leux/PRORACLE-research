@@ -17,6 +17,18 @@ from proracle.domain import create_baseline_prediction, validate_features
 from proracle.evaluate import Result
 from proracle.rating import RatingState, build_rating_state, create_rating_prediction
 from proracle.supabase_adapter import SupabaseRESTStore, SupabaseStoreError
+from proracle.ticket import run_daily_ticket
+
+# P0 capture switches (docs/TICKETS.md). Both are off unless set to exactly "1", so the new steps
+# cannot run before the capture migration has been applied to the database.
+CAPTURE_SCORES_SWITCH = "PRORACLE_CAPTURE_SCORES"
+DAILY_TICKET_SWITCH = "PRORACLE_DAILY_TICKET"
+# After this many failed capture writes in one run, stop trying for the rest of that run.
+MAX_CAPTURE_ERRORS = 5
+
+
+def _switch_on(name: str) -> bool:
+    return os.environ.get(name, "") == "1"
 
 
 def _positive_days(variable: str, default: int, maximum: int) -> int:
@@ -175,6 +187,10 @@ def run_self_hosted(
             api_key=os.environ.get("SUPABASE_API_KEY") or None,
         )
 
+    capture = _switch_on(CAPTURE_SCORES_SWITCH)
+    if capture:
+        summary.update(scores_captured=0, countries_captured=0, capture_errors=0)
+
     fixture_ids: dict[str, str] = {}
     for match in [*upcoming, *finished]:
         try:
@@ -188,6 +204,28 @@ def run_self_hosted(
         fixture_ids[match.source_event_key] = str(fixture_id)
         summary["fixtures_synced"] += 1
         summary["results_written"] += int(result_added)
+        # A score is captured with a result this run added; older results are covered by the
+        # manual backfill (proracle.score_backfill), not by every cycle.
+        if (
+            capture
+            and result_added
+            and match.home_score is not None
+            and match.away_score is not None
+            and summary["capture_errors"] < MAX_CAPTURE_ERRORS
+        ):
+            try:
+                store.append_match_score(fixture_id, match.home_score, match.away_score, retrieved_at)
+                summary["scores_captured"] += 1
+            except SupabaseStoreError:
+                summary["capture_errors"] += 1
+
+    if capture and summary["capture_errors"] < MAX_CAPTURE_ERRORS:
+        countries = getattr(bsd, "league_countries", None) or {}
+        try:
+            store.append_competition_countries(countries, retrieved_at)
+            summary["countries_captured"] = len(countries)
+        except SupabaseStoreError:
+            summary["capture_errors"] += 1
 
     if source_failure is not None:
         for match in prediction_candidates:
@@ -232,6 +270,9 @@ def run_self_hosted(
         fixture_id = fixture_ids[match.source_event_key]
         _write_baseline_prediction(store, match, fixture_id, training, predicted_at, summary)
         _write_rating_prediction(store, rating_state, match, fixture_id, predicted_at, summary)
+    if _switch_on(DAILY_TICKET_SWITCH):
+        # After the predictions, so the pool sees this cycle's rows. Never raises, never alters one.
+        summary.update(run_daily_ticket(store, clock()))
     return summary
 
 

@@ -256,6 +256,9 @@ class BSDClient:
         self.invalid_rows_skipped = 0
         # League rows skipped as invalid by the most recent fetch_league_names call (a count only).
         self.league_rows_skipped = 0
+        # League id -> country label from the most recent fetch_league_names call. Labels only; a
+        # league without a usable country is simply absent (it is still a valid league).
+        self.league_countries: dict[str, str] = {}
 
     @staticmethod
     def _date(value: str, label: str) -> str:
@@ -417,6 +420,7 @@ class BSDClient:
         response, an inconsistent count or a truncated read fails closed with a stable code.
         """
         self.league_rows_skipped = 0
+        self.league_countries = {}
         names: dict[str, str] = {}
         offset = 0
         expected_count: int | None = None
@@ -450,6 +454,12 @@ class BSDClient:
                     self.league_rows_skipped += 1
                     continue
                 names[league_id] = name
+                try:
+                    country = _optional_label(row.get("country"))
+                except ValueError:
+                    country = None
+                if country is not None:
+                    self.league_countries[league_id] = country
             offset += len(rows)
             if expected_count is not None and offset >= expected_count:
                 break

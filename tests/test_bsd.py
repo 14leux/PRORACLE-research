@@ -369,3 +369,38 @@ class LeagueNamesTests(unittest.TestCase):
         client, _ = self.client(json_response({"count": 1, "results": ["not a row"]}))
         with self.assertRaises(BSDSourceError):
             client.fetch_league_names()
+
+    def test_league_countries_are_recorded_beside_the_names_and_a_bad_country_is_dropped(self) -> None:
+        client, _ = self.client(
+            json_response(
+                {
+                    "count": 4,
+                    "results": [
+                        {"id": 1, "name": "Alpha League", "country": "Kenya"},
+                        {"id": 2, "name": "Beta Cup", "country": "Africa"},
+                    ],
+                }
+            ),
+            json_response(
+                {
+                    "count": 4,
+                    "results": [
+                        {"id": 3, "name": "Gamma Division"},  # no country field
+                        {"id": 4, "name": "Delta League", "country": {"name": "Nested"}},  # unusable
+                    ],
+                }
+            ),
+        )
+        names = client.fetch_league_names()
+        self.assertEqual(names, {"1": "Alpha League", "2": "Beta Cup", "3": "Gamma Division", "4": "Delta League"})
+        self.assertEqual(client.league_countries, {"1": "Kenya", "2": "Africa"})
+        self.assertEqual(client.league_rows_skipped, 0)  # a league without a country is still a league
+
+    def test_a_new_league_fetch_replaces_the_previous_countries(self) -> None:
+        client, _ = self.client(
+            json_response({"count": 1, "results": [{"id": 1, "name": "A", "country": "Kenya"}]}),
+            json_response({"count": 1, "results": [{"id": 2, "name": "B"}]}),
+        )
+        client.fetch_league_names()
+        client.fetch_league_names()
+        self.assertEqual(client.league_countries, {})
