@@ -72,7 +72,7 @@ export function limits(dailyCap: number): readonly string[] {
     `At most ${MAX_FIXTURES} fixtures per ticket; extra rows are dropped.`,
     `At most ${dailyCap} screenshot or PDF reads per UTC day.`,
     `Files up to ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MB. The file is read in memory and never stored; only teams, kickoffs and odds are kept.`,
-    "Fixtures that cannot be matched exactly to a stored fixture are reported, never guessed.",
+    "A row is matched to a stored fixture by exact name, then by names I remember from earlier tickets, then by name similarity when exactly one fixture fits within 3 hours; anything else is reported, never guessed.",
   ];
 }
 

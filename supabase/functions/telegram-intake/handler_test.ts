@@ -109,6 +109,49 @@ Deno.test("a failing menu sync never changes the reply or the response, and is r
   assert.equal(kit.tg.menuSyncs.length, 2, "stops once it has succeeded");
 });
 
+Deno.test("a name-similarity match is used, shown back for checking, and counted; exact matches are not listed", async () => {
+  const kit = makeKit();
+  kit.setVision({ fixtures: [row("Brighton", "Universitatea Craiova"), row("Alpha", "Beta")] });
+  kit.store.fixtures = [
+    fixture("f1", "Brighton & Hove Albion", "Universitatea Craiova", KICKOFF),
+    fixture("f2", "Alpha", "Beta", KICKOFF),
+  ];
+  await post(kit, fileMessage("photo"));
+  const text = kit.tg.texts;
+  assert.match(text, /Matched 2, unmatched 0/);
+  assert.match(text, /Matched by name similarity \(check these; I will remember them for next time\):/);
+  assert.match(text, /- Brighton v Universitatea Craiova = Brighton & Hove Albion v Universitatea Craiova/);
+  assert.doesNotMatch(text, /Alpha v Beta =/);
+  assert.deepEqual(kit.store.intakes[0].rows.map((r) => [r.fixtureId, r.via]), [["f1", "LOOSE"], ["f2", "EXACT"]]);
+  assert.equal(kit.store.audits.find((a) => a.action === "TICKET")!.detail, "read=2 kept=2 matched=2 remembered=0 similar=1");
+  assert.deepEqual(kit.dispatched, ["intake-1"]);
+});
+
+Deno.test("names tied to a stored name by an earlier ticket are remembered; a memory that cannot be read changes nothing else", async () => {
+  const kit = makeKit();
+  kit.store.history = [
+    { home_team: "HEARTS", away_team: "MONACO", matched: { home_team: "Heart of Midlothian", away_team: "AS Monaco" } },
+  ];
+  kit.setVision({ fixtures: [row("Hearts", "Monaco")] });
+  kit.store.fixtures = [fixture("f1", "Heart of Midlothian", "AS Monaco", KICKOFF)];
+  await post(kit, fileMessage("photo"));
+  assert.match(kit.tg.texts, /1 matched through names I remembered from earlier tickets\./);
+  assert.doesNotMatch(kit.tg.texts, /name similarity/);
+  assert.deepEqual(kit.store.intakes[0].rows.map((r) => r.via), ["ALIAS"]);
+
+  const noMemory = makeKit();
+  noMemory.store.failOn = "matchedHistory";
+  noMemory.setVision({ fixtures: [row("Alpha", "Beta"), row("Hearts", "Monaco")] });
+  noMemory.store.fixtures = [fixture("f1", "Alpha", "Beta", KICKOFF), fixture("f2", "Heart of Midlothian", "AS Monaco", KICKOFF)];
+  await post(noMemory, fileMessage("photo"));
+  assert.match(noMemory.tg.texts, /Matched 1, unmatched 1/); // the exact one still matches; "Hearts" is not guessed without memory
+  assert.equal(noMemory.store.audits.find((a) => a.action === "TICKET")!.outcome, "OK");
+  assert.ok(
+    noMemory.store.audits.some((a) => a.action === "ERROR" && a.detail === "matching memory unreadable"),
+    "a broken memory lookup leaves an audit row",
+  );
+});
+
 Deno.test("a vision service failure is audited with its reason and the reply says it was the service, not the file", async () => {
   const failing = makeKit({ vision: () => Promise.reject(new VisionError("REQUEST_FAILED", "HTTP 400 invalid_request_error credit balance is too low")) });
   await post(failing, fileMessage({ mime: "application/pdf" }));
