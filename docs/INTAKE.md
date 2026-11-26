@@ -4,6 +4,8 @@ Send your own bot a screenshot or PDF of fixtures from a betting site. The intak
 
 It is optional, built as a Supabase Edge Function plus one workflow, and **it does nothing until you deploy it and register a webhook**. Nothing in this repository deploys it.
 
+New to it? [USER_MANUAL.html](USER_MANUAL.html) is a picture-first walk-through (open it in a browser; it works offline) with Telegram examples, a rule builder and copy-paste queries to see the data. This page is the reference.
+
 ## How it works
 
 1. Telegram calls your Edge Function `telegram-intake` (a webhook).
