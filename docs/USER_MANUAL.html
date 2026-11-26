@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>PRORACLE Rule Lab Manual</title>
+<style>
+/* Layout concept: a field-notes manual on a pitch-green ground. One column of short sections,
+   each led by a big picture; chat bubbles and SQL boxes are the only dense parts. */
+:root {
+  --bg: #edf2ef;
+  --surface: #ffffff;
+  --surface-2: #f4f8f6;
+  --ink: #13221c;
+  --muted: #4f625a;
+  --line: #c9d7d0;
+  --accent: #1f7a4d;
+  --accent-ink: #ffffff;
+  --warn: #9a5a06;
+  --warn-bg: #fdf1d9;
+  --bad: #a8321f;
+  --me: #d6efe0;
+  --a: #2a62b8;
+  --c: #7a4fb5;
+  --b1: #b7791f;
+  --b2: #c4502b;
+  --b3: #b83a66;
+  --b4: #137f7b;
+  --b5: #6d7f1b;
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --text: "Inter", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1a16; --surface: #16251f; --surface-2: #1b2d26; --ink: #e6f0ea; --muted: #9db2a8;
+    --line: #2a3d35; --accent: #4fc58a; --accent-ink: #0b1712; --warn: #f0b84f; --warn-bg: #2f2512;
+    --bad: #f08a78; --me: #1d3b2d; --a: #7da8f0; --c: #bfa0ee; --b1: #f0b84f; --b2: #f0916b;
+    --b3: #f08aae; --b4: #5cd0c9; --b5: #b8cf5b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1a16; --surface: #16251f; --surface-2: #1b2d26; --ink: #e6f0ea; --muted: #9db2a8;
+  --line: #2a3d35; --accent: #4fc58a; --accent-ink: #0b1712; --warn: #f0b84f; --warn-bg: #2f2512;
+  --bad: #f08a78; --me: #1d3b2d; --a: #7da8f0; --c: #bfa0ee; --b1: #f0b84f; --b2: #f0916b;
+  --b3: #f08aae; --b4: #5cd0c9; --b5: #b8cf5b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--text); font-size: 17px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 4rem;
+}
+.wrap { max-width: 880px; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2.1rem, 6vw, 3.3rem); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: clamp(1.6rem, 4.2vw, 2.1rem); font-weight: 700; letter-spacing: -0.01em; }
+h3 { font-size: 1.15rem; font-weight: 700; }
+p { margin: 0; }
+a { color: var(--accent); }
+code, pre, .mono { font-family: var(--mono); }
+code { font-size: 0.92em; background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 0.05em 0.35em; }
+.eyebrow { font-size: 0.78rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.lede { font-size: 1.2rem; color: var(--muted); max-width: 40rem; }
+
+/* header and nav */
+.hero { padding-top: 2.4rem; padding-bottom: 1.6rem; display: grid; gap: 1rem; }
+nav.toc {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg);
+  border-bottom: 1px solid var(--line); padding-block: 0.55rem; margin-bottom: 0.5rem;
+}
+nav.toc .wrap { display: flex; gap: 0.35rem 0.9rem; flex-wrap: wrap; font-size: 0.9rem; }
+nav.toc a { text-decoration: none; color: var(--muted); padding: 0.1rem 0; border-bottom: 2px solid transparent; }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--ink); border-bottom-color: var(--accent); outline: none; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+
+section { padding-block: 2.4rem; border-top: 1px solid var(--line); scroll-margin-top: 3.2rem; display: grid; gap: 1.1rem; }
+section.first { border-top: 0; }
+.say { font-size: 1.12rem; max-width: 42rem; }
+.say b { font-weight: 600; }
+.grid { display: grid; gap: 0.9rem; }
+.g2 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.5rem), 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.05rem 1.1rem; display: grid; gap: 0.55rem; align-content: start; min-width: 0; }
+.card svg { width: 100%; height: auto; max-height: 120px; }
+.card p { color: var(--muted); font-size: 0.97rem; }
+.note { background: var(--warn-bg); border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 1rem; color: var(--ink); font-size: 0.97rem; }
+.note b { color: var(--warn); }
+.good { border-left: 4px solid var(--accent); padding: 0.2rem 0 0.2rem 0.9rem; color: var(--ink); }
+
+/* arm chips */
+.chip { --c0: var(--a); display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--mono); font-size: 0.86rem; font-weight: 500;
+  color: var(--c0); background: color-mix(in srgb, var(--c0) 14%, var(--surface)); border: 1px solid color-mix(in srgb, var(--c0) 45%, var(--surface));
+  border-radius: 999px; padding: 0.12rem 0.6rem; white-space: nowrap; }
+.chip.a { --c0: var(--a); } .chip.c { --c0: var(--c); } .chip.b1 { --c0: var(--b1); } .chip.b2 { --c0: var(--b2); }
+.chip.b3 { --c0: var(--b3); } .chip.b4 { --c0: var(--b4); } .chip.b5 { --c0: var(--b5); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--surface-2); }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { font-variant-numeric: tabular-nums; }
+
+/* steps */
+.steps { display: grid; gap: 1.4rem; counter-reset: s; padding: 0; margin: 0; list-style: none; }
+.steps > li { display: grid; gap: 0.7rem; counter-increment: s; }
+.steps > li > .head { display: flex; gap: 0.8rem; align-items: baseline; }
+.steps > li > .head::before { content: counter(s); font-family: var(--display); font-weight: 700; font-size: 1.1rem; min-width: 2rem; height: 2rem; display: inline-grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--accent-ink); flex: none; align-self: center; }
+.steps .why { color: var(--muted); font-size: 0.97rem; margin-left: 2.8rem; margin-top: -0.3rem; }
+.steps .body { margin-left: 2.8rem; display: grid; gap: 0.7rem; min-width: 0; }
+@media (max-width: 520px) { .steps .why, .steps .body { margin-left: 0; } }
+
+/* chat */
+.chat { display: grid; gap: 0.5rem; background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 0.8rem; min-width: 0; }
+.msg { font-family: var(--mono); font-size: 0.84rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; padding: 0.55rem 0.75rem; border-radius: 12px; max-width: 94%; border: 1px solid var(--line); }
+.msg.me { justify-self: end; background: var(--me); border-bottom-right-radius: 3px; }
+.msg.bot { justify-self: start; background: var(--surface); border-bottom-left-radius: 3px; }
+.msg small { display: block; font-family: var(--text); font-size: 0.72rem; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 0.2rem; }
+.tag { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--warn); font-weight: 600; }
+
+/* code / sql */
+.sql { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
+.sql .top { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.sql .top b { font-family: var(--display); font-size: 0.98rem; }
+.sql pre { margin: 0; padding: 0.8rem; overflow-x: auto; font-size: 0.82rem; line-height: 1.5; }
+.sql .see { padding: 0.55rem 0.8rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.92rem; }
+button { font: inherit; cursor: pointer; }
+.btn { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 0.38rem 0.8rem; font-weight: 600; font-size: 0.88rem; }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.btn:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+
+/* builder */
+.builder { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem; display: grid; gap: 0.9rem; }
+.row { display: flex; flex-wrap: wrap; gap: 0.6rem 0.9rem; align-items: center; }
+.row label { font-weight: 500; min-width: 0; }
+select, input[type="text"], input[type="range"] { font: inherit; color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 0.35rem 0.55rem; max-width: 100%; }
+input[type="text"] { min-width: 12rem; flex: 1 1 12rem; }
+.out { font-family: var(--mono); font-size: 0.95rem; background: var(--me); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.85rem; overflow-wrap: anywhere; }
+.plain { color: var(--muted); font-size: 0.95rem; min-height: 1.5em; }
+.bar { height: 26px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); position: relative; overflow: hidden; }
+.bar > i { position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); background: color-mix(in srgb, var(--accent) 35%, var(--surface)); border-left: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+.bar > u { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: var(--ink); text-decoration: none; }
+
+/* timeline svg */
+svg text { font-family: var(--text); fill: var(--ink); }
+svg .m { fill: var(--muted); }
+svg .ln { stroke: var(--line); }
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 0.8rem; overflow-x: auto; }
+.diagram svg { min-width: 560px; width: 100%; height: auto; display: block; }
+footer { padding-top: 2rem; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="hero">
+    <p class="eyebrow">PRORACLE &middot; written 26 Nov 2026</p>
+    <h1>The Rule Lab: how to play with it</h1>
+    <p class="lede">A pretend ticket. Several players guess the same matches before kickoff. When the matches end, we count who was right. You invent the players.</p>
+  </header>
+</div>
+<nav class="toc" aria-label="Sections"><div class="wrap">
+  <a href="#idea">Idea</a><a href="#players">Players</a><a href="#new">What is new</a><a href="#play">Play along</a><a href="#builder">Rule builder</a>
+  <a href="#when">When</a><a href="#data">See the data</a><a href="#learn">Learning</a><a href="#read">Reading</a><a href="#stuck">Stuck?</a><a href="#card">Cheat sheet</a>
+</div></nav>
+
+<main class="wrap">
+
+<section id="idea" class="first">
+  <h2>The idea in four pictures</h2>
+  <div class="grid g4">
+    <div class="card">
+      <svg viewBox="0 0 160 96" role="img" aria-label="A list of matches"><rect x="14" y="10" width="132" height="76" rx="8" fill="none" stroke="var(--line)" stroke-width="2"/><g stroke="var(--muted)" stroke-width="3" stroke-linecap="round"><line x1="28" y1="30" x2="96" y2="30"/><line x1="28" y1="48" x2="118" y2="48"/><line x1="28" y1="66" x2="84" y2="66"/></g><g fill="var(--accent)"><circle cx="128" cy="30" r="4"/><circle cx="128" cy="48" r="4"/><circle cx="128" cy="66" r="4"/></g></svg>
+      <h3>1. Matches</h3><p>A list of games, 10 to 20. Today's list comes by itself. You can also send a PDF.</p>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 160 96" role="img" aria-label="Players pick home, draw or away"><g font-family="monospace" font-size="13" text-anchor="middle"><rect x="12" y="14" width="40" height="30" rx="6" fill="color-mix(in srgb, var(--a) 18%, var(--surface))" stroke="var(--a)" stroke-width="2"/><text x="32" y="34" style="fill:var(--a)">H</text><rect x="60" y="14" width="40" height="30" rx="6" fill="color-mix(in srgb, var(--c) 18%, var(--surface))" stroke="var(--c)" stroke-width="2"/><text x="80" y="34" style="fill:var(--c)">D</text><rect x="108" y="14" width="40" height="30" rx="6" fill="color-mix(in srgb, var(--b1) 18%, var(--surface))" stroke="var(--b1)" stroke-width="2"/><text x="128" y="34" style="fill:var(--b1)">A</text></g><g stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><line x1="32" y1="52" x2="32" y2="76"/><line x1="80" y1="52" x2="80" y2="76"/><line x1="128" y1="52" x2="128" y2="76"/></g><g fill="var(--muted)"><circle cx="32" cy="82" r="5"/><circle cx="80" cy="82" r="5"/><circle cx="128" cy="82" r="5"/></g></svg>
+      <h3>2. Everyone picks</h3><p>Home win, draw or away win. Each player picks all the same games.</p>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 160 96" role="img" aria-label="A locked clock before kickoff"><circle cx="64" cy="48" r="32" fill="none" stroke="var(--muted)" stroke-width="3"/><line x1="64" y1="48" x2="64" y2="28" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/><line x1="64" y1="48" x2="80" y2="56" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/><rect x="104" y="46" width="34" height="28" rx="5" fill="var(--accent)"/><path d="M111 46v-8a10 10 0 0 1 20 0v8" fill="none" stroke="var(--accent)" stroke-width="4"/></svg>
+      <h3>3. Locked</h3><p>Picks are frozen before kickoff. Nobody can change them after the match.</p>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 160 96" role="img" aria-label="A scoreboard with ticks"><rect x="14" y="10" width="132" height="76" rx="8" fill="none" stroke="var(--line)" stroke-width="2"/><g fill="none" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M26 30l7 7 13-14"/><path d="M26 56l7 7 13-14"/></g><g stroke="var(--bad)" stroke-width="4" stroke-linecap="round"><line x1="104" y1="26" x2="118" y2="40"/><line x1="118" y1="26" x2="104" y2="40"/></g><g stroke="var(--muted)" stroke-width="3" stroke-linecap="round"><line x1="58" y1="30" x2="92" y2="30"/><line x1="58" y1="56" x2="92" y2="56"/></g><g fill="none" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M104 56l7 7 13-14"/></g></svg>
+      <h3>4. Score</h3><p>When games end, we count each player's right guesses. That is the scoreboard.</p>
+    </div>
+  </div>
+  <p class="say">It is a <b>report card</b>, not betting advice. It never says what to stake or what you would win.</p>
+</section>
+
+<section id="players">
+  <h2>Meet the players</h2>
+  <div class="grid g2">
+    <div class="card"><span class="chip a">A</span><h3>The model</h3><p>Picks whatever the rating model thinks is most likely. Never looks at odds. You cannot change it.</p></div>
+    <div class="card"><span class="chip c">C</span><h3>The draw lover</h3><p>Follows A, except the five games where a draw looks likeliest. There it picks <b>draw</b>. Never looks at odds.</p></div>
+  </div>
+  <div class="card">
+    <h3>Your players: up to five rules</h3>
+    <p>Each rule you add becomes its own player. Rule 3 is called <span class="chip b3">B3</span>. It follows A, except where your rule says to change a pick.</p>
+    <div class="row" aria-label="Five rule slots">
+      <span class="chip b1">B1</span><span class="chip b2">B2</span><span class="chip b3">B3</span><span class="chip b4">B4</span><span class="chip b5">B5</span><span class="mono" style="color:var(--muted)">five slots at once</span>
+    </div>
+  </div>
+  <p class="say"><b>One match, everyone's pick.</b> This is what <code>/ticket</code> shows you (example):</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Match</th><th>A</th><th>B1 (2 draws)</th><th>B2 (1 upset)</th><th>C</th></tr></thead>
+    <tbody>
+      <tr><td>Lions v Tigers</td><td><span class="chip a">home</span></td><td><span class="chip b1">home</span></td><td><span class="chip b2">away</span> reversed</td><td><span class="chip c">draw</span> forced</td></tr>
+      <tr><td>Reds v Blues</td><td><span class="chip a">home</span></td><td><span class="chip b1">draw</span> forced</td><td><span class="chip b2">home</span></td><td><span class="chip c">home</span></td></tr>
+    </tbody>
+  </table></div>
+  <p class="say">A rule is only <b>different</b> from A on the few picks it changes. That is where we find out if the rule helps.</p>
+</section>
+
+<section id="new">
+  <h2>What is new today</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>New</th><th>In plain words</th></tr></thead>
+    <tbody>
+      <tr><td><b>Five rules at once</b></td><td>Before: one rule, and a new rule replaced it. Now up to five run side by side on the same games.</td></tr>
+      <tr><td><code>/retire 3</code></td><td>Stops rule 3, after you say YES. Its old picks stay and keep being scored.</td></tr>
+      <tr><td><b>Every day, rules play too</b></td><td>The automatic daily ticket now carries your rules, so data grows on days you send nothing. (A rule that uses odds only plays on PDF tickets, because the daily ticket has no odds.)</td></tr>
+      <tr><td><b>Smaller daily ticket is fine</b></td><td>Needs only 10 games, not 20. With 10 to 19 games it makes a shorter ticket instead of skipping the day.</td></tr>
+      <tr><td><code>/scoreboard</code> upgrade</td><td>Shows every player side by side, with a margin of error and a warning when there are too few results.</td></tr>
+      <tr><td><b>Name memory</b></td><td>The bot remembers team-name spellings that worked before, so each PDF gets easier.</td></tr>
+      <tr><td><b>Clearer replies</b></td><td>The second Telegram message no longer repeats the unmatched list, and says how many rows were left out.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="play">
+  <h2>Play along: your first 10 minutes</h2>
+  <p class="say">Open your bot in Telegram. Type exactly what is in the green bubbles. Grey bubbles show what the bot says back (yours will look a little different).</p>
+  <ol class="steps">
+    <li>
+      <div class="head"><h3>See what you can do</h3></div>
+      <div class="body">
+        <div class="chat"><div class="msg me">/help</div><div class="msg bot"><small>Bot</small>What you can do: ... /rule, /retire, YES, NO, /rules, /ticket, /scoreboard ...</div></div>
+        <p class="why">The new buttons (like <code>/retire</code>) show up in Telegram's menu after your first message following today's update.</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Invent your first player</h3></div>
+      <div class="body">
+        <div class="chat">
+          <div class="msg me">/rule 5 draws</div>
+          <div class="msg bot"><small>Bot</small>Proposed rule v1 as arm B1:
+force the 5 highest draw scores to DRAW
+
+Nothing changes until you reply YES (it waits 60 minutes). Reply NO to cancel. 0 of 5 rule slots are in use.</div>
+          <div class="msg me">YES</div>
+          <div class="msg bot"><small>Bot</small>Rule v1 is now active as arm B1:
+force the 5 highest draw scores to DRAW
+Active rules: v1 (1 of 5). It applies to tickets frozen from now on.</div>
+        </div>
+        <p class="why">The bot never starts a rule without your YES. If you do not answer for an hour, the proposal expires.</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Add rivals, one change at a time</h3></div>
+      <div class="body">
+        <div class="chat">
+          <div class="msg me">/rule 2 draws</div><div class="msg me">YES</div>
+          <div class="msg me">/rule 3 upsets by margin</div><div class="msg me">YES</div>
+          <div class="msg me">/rule 3 draws; only Premier League</div><div class="msg me">YES</div>
+        </div>
+        <p class="why">You now have B1 (5 draws), B2 (2 draws), B3 (3 upsets), B4 (3 draws in one league). Good experiments change <b>one thing</b>: 5 draws against 2 draws tells you something. Use the <a href="#builder">rule builder</a> below to write the words for you.</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Check your players</h3></div>
+      <div class="body">
+        <div class="chat">
+          <div class="msg me">/rules</div>
+          <div class="msg bot"><small>Bot</small>Active rules (4 of 5; each is its own arm B on the same fixtures as A and C):
+- B1 (rule v1): force the 5 highest draw scores to DRAW
+- B2 (rule v2): force the 2 highest draw scores to DRAW
+- B3 (rule v3): reverse 3 picks chosen by smallest model margin
+- B4 (rule v4): force the 3 highest draw scores to DRAW; only leagues: Premier League</div>
+        </div>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Send a PDF of fixtures</h3></div>
+      <div class="body">
+        <p>Attach the PDF or a screenshot. The bot reads it (one of your 10 reads for the day), then replies twice.</p>
+        <div class="chat">
+          <div class="msg bot"><small>Bot, message 1</small>Read 41 row(s); using 20. Matched 10, unmatched 10 ...
+Computing arms A, C and B1, B2, B3, B4 (one per active rule) now; the frozen picks follow in this chat.</div>
+          <div class="msg bot"><small>Bot, message 2 (a minute later)</small>Frozen before kickoff: 10 fixture(s), arms A, B1, B2, B3, B4, C.
+- Home 1 v Away 1: A home | B1 draw (forced) | B2 home | B3 away (reversed) | B4 home | C draw (forced)
+...
+Arm B is one pick set per active rule (B3 is rule v3):
+- rule v1: 5 of 5 requested adjustments applied on 10 fixture(s) in scope
+- rule v4: 3 of 3 requested adjustments applied on 4 fixture(s) in scope</div>
+        </div>
+        <p class="why">Picks are locked at that moment, before kickoff. Games already kicked off are left out and listed.</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Look at today's tickets</h3></div>
+      <div class="body">
+        <div class="chat"><div class="msg me">/ticket</div><div class="msg bot"><small>Bot</small>Simulated ticket, 20 fixtures:
+- Lions v Tigers: A home | B1 draw (forced) | B2 home | C draw (forced)
+...
+Screenshot ticket, 10 fixtures:
+...</div></div>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Come back later and read the report card</h3></div>
+      <div class="body">
+        <div class="chat">
+          <div class="msg me">/scoreboard</div>
+          <div class="msg bot"><small>Bot (example numbers only)</small>Hit rates on settled picks of complete tickets (a calibration report card, not evidence of an edge). The ± is a rough 95% margin for one hit rate: a gap smaller than it is most likely noise.
+
+Simulated tickets:
+- A (rating model): 22 of 40 right (55.0%, ±15 pts) over 3 ticket(s)
+- B1 (rule v1): 21 of 40 right (52.5%, ±15 pts) over 3 ticket(s)
+  Same fixtures: A 22 right, C 20 right
+  Where it differs from A by design: 9 settled, it was right 3 times and A 4
+- C (draw-score-v1): 20 of 40 right (50.0%, ±15 pts) over 3 ticket(s)
+  Same fixtures: A 22 right
+  Where it differs from A by design: 9 settled, it was right 3 times and A 4</div>
+        </div>
+        <p class="why">Results come after the matches end and a scheduled run records them (see <a href="#when">When</a>). Until then it says "No settled ticket picks yet."</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Retire a player that is not working</h3></div>
+      <div class="body">
+        <div class="chat">
+          <div class="msg me">/retire 2</div>
+          <div class="msg bot"><small>Bot</small>Stop rule v2 (arm B2): force the 2 highest draw scores to DRAW?
+It would no longer be used on tickets frozen from now on; its earlier picks stay and are still scored. Reply YES to stop it (it waits 60 minutes) or NO to keep it.</div>
+          <div class="msg me">YES</div>
+          <div class="msg bot"><small>Bot</small>Rule v2 is retired (arm B2). Its earlier picks stay and are still scored. Active rules: v1, v3, v4.</div>
+        </div>
+        <p class="why">The slot is free again. Start a new rule and it gets the next version number (v5), so a new name and a fresh count from zero.</p>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section id="builder">
+  <h2>Rule builder</h2>
+  <p class="say">Pick what you want. Copy the line. Paste it into Telegram.</p>
+  <div class="builder">
+    <div class="row">
+      <label for="b-draws">Force draws</label>
+      <select id="b-draws"><option value="0">none</option></select>
+      <span class="plain" style="min-height:0">picks "draw" on the games where a draw looks likeliest</span>
+    </div>
+    <div class="row">
+      <label for="b-ups">Reverse picks</label>
+      <select id="b-ups"><option value="0">none</option></select>
+      <select id="b-basis" aria-label="How to choose which picks to reverse">
+        <option value="margin">the ones the model is least sure about (by margin)</option>
+        <option value="odds">the biggest model-vs-market gap (by odds, PDF tickets only)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="b-scope">Leagues</label>
+      <select id="b-scope"><option value="all">all leagues</option><option value="only">only these</option><option value="skip">skip these</option></select>
+      <input type="text" id="b-leagues" placeholder="Premier League, La Liga" aria-label="League names, separated by commas" disabled>
+    </div>
+    <div class="out" id="b-out" aria-live="polite">/rule </div>
+    <div class="plain" id="b-plain"></div>
+    <div class="row"><button class="btn" id="b-copy" type="button">Copy the line</button><span class="plain" id="b-copied" style="min-height:0"></span></div>
+  </div>
+  <div class="note"><b>Check the league spelling.</b> It has to match the name printed in your fixtures. Run the "league names" query in <a href="#data">See the data</a> to see the exact names.</div>
+</section>
+
+<section id="when">
+  <h2>When things happen</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 760 210" role="img" aria-label="A day: runs at 08:37 and 20:37 Nairobi time">
+      <line class="ln" x1="30" y1="110" x2="730" y2="110" stroke-width="3"/>
+      <g font-size="13">
+        <text class="m" x="30" y="136">00:00</text><text class="m" x="205" y="136">06:00</text><text class="m" x="380" y="136">12:00</text><text class="m" x="555" y="136">18:00</text><text class="m" x="715" y="136" text-anchor="end">24:00</text>
+        <text class="m" x="30" y="154">Nairobi time</text>
+      </g>
+      <g stroke="var(--line)" stroke-width="2"><line x1="30" y1="104" x2="30" y2="116"/><line x1="205" y1="104" x2="205" y2="116"/><line x1="380" y1="104" x2="380" y2="116"/><line x1="555" y1="104" x2="555" y2="116"/><line x1="730" y1="104" x2="730" y2="116"/></g>
+      <!-- 08:37 -->
+      <circle cx="242" cy="110" r="11" fill="var(--accent)"/>
+      <text x="242" y="62" font-size="14" font-weight="600" text-anchor="middle">08:37</text>
+      <text class="m" x="242" y="82" font-size="12.5" text-anchor="middle">make today's ticket</text>
+      <text class="m" x="242" y="97" font-size="12.5" text-anchor="middle">+ record results + summary</text>
+      <!-- 20:37 -->
+      <circle cx="623" cy="110" r="11" fill="var(--accent)"/>
+      <text x="623" y="62" font-size="14" font-weight="600" text-anchor="middle">20:37</text>
+      <text class="m" x="623" y="82" font-size="12.5" text-anchor="middle">record results</text>
+      <text class="m" x="623" y="97" font-size="12.5" text-anchor="middle">(no new ticket)</text>
+      <!-- you -->
+      <circle cx="450" cy="176" r="8" fill="var(--b1)"/>
+      <text x="466" y="181" font-size="13">any time: you send a PDF or a command, the bot answers at once</text>
+    </svg>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>By itself, every day</h3><p>The daily ticket (from games in the next 24 hours, 10 to 20 of them), locked before kickoff, with whatever rules are active at that moment. Then results get recorded and scored.</p></div>
+    <div class="card"><h3>Only when you act</h3><p>PDF tickets, new rules, stopping rules, looking at things. Nothing else changes while you are away. On quiet days the data still grows.</p></div>
+  </div>
+  <div class="note"><b>Times drift.</b> GitHub sometimes starts a scheduled run late, by minutes or even an hour. The times are 05:37 and 17:37 UTC.</div>
+  <div class="good"><b>Try it tonight:</b> add your rules now. Tomorrow after 08:37, <code>/ticket</code> shows a daily ticket with B1, B2 ... next to A and C. The first scores appear after those games finish and a later run records them.</div>
+  <p class="say">A rule you add late in the day first appears on the <b>next</b> day's daily ticket, because the ticket is written once and never edited. A PDF ticket uses your rules straight away.</p>
+</section>
+
+<section id="data">
+  <h2>See the data</h2>
+  <div class="grid g2">
+    <div class="card"><h3>In Telegram</h3><p><code>/rules</code> who is playing<br><code>/ticket</code> today's picks<br><code>/scoreboard</code> who is winning</p></div>
+    <div class="card"><h3>In Supabase</h3><p>Open your project, then <b>SQL Editor</b>, paste a query, press Run. Everything below only reads. Nothing here changes anything.</p></div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>Who is winning (same as /scoreboard)</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>select ticket_kind, arm, arm_version, tickets, picks_settled, picks_right,
+       round(100.0 * picks_right / picks_settled, 1) as pct_right,
+       a_right_same_fixtures, c_right_same_fixtures,
+       adjusted_settled, adjusted_right, a_right_on_adjusted
+from proracle.intake_scoreboard
+order by ticket_kind, arm, arm_version;</pre>
+    <div class="see">Empty until games have finished. <code>adjusted_*</code> are the picks where a rule or C differs from A on purpose.</div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>Today's picks, every player side by side</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>select f.kickoff_at, f.home_team, f.away_team,
+       case when p.arm = 'B' then 'B' || replace(p.arm_version, 'rule-v', '') else p.arm end as player,
+       p.pick, p.adjustment, p.forced
+from proracle.ticket_arm_picks p
+join proracle.tickets t on t.id = p.ticket_id
+join proracle.fixtures f on f.id = p.fixture_id
+where t.ticket_date = current_date
+order by f.kickoff_at, f.home_team, player;</pre>
+    <div class="see">One row per player per match. <code>adjustment</code> says FORCED_DRAW or REVERSED when a rule changed A's pick.</div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>Finished matches: who was right</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>select f.kickoff_at, f.home_team, f.away_team, r.actual_outcome as result,
+       case when p.arm = 'B' then 'B' || replace(p.arm_version, 'rule-v', '') else p.arm end as player,
+       p.pick, p.pick = r.actual_outcome as right_pick
+from proracle.ticket_arm_picks p
+join proracle.fixtures f on f.id = p.fixture_id
+join proracle.results r on r.fixture_id = p.fixture_id and r.status = 'FINAL'
+  and not exists (select 1 from proracle.results s where s.supersedes_result_id = r.id)
+order by f.kickoff_at desc, f.home_team, player
+limit 200;</pre>
+    <div class="see">The raw material behind the scoreboard. Sort or filter it to spot patterns (for example only the rows where <code>player</code> starts with B).</div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>Rules: who is playing and the history</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>-- playing now
+select version, source_text, activated_at from proracle.intake_active_rules;
+
+-- everything that ever happened to a rule
+select r.version, r.source_text, e.event, e.created_at
+from proracle.intake_rule_events e join proracle.intake_rules r on r.id = e.rule_id
+order by e.created_at desc;</pre>
+    <div class="see">Run each part on its own (select it, then Run). Events: PROPOSED, ACTIVATED, DECLINED, RETIRE_REQUESTED, RETIRE_DECLINED, RETIRED.</div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>League names you can use in a rule</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>select competition_name, count(*) as upcoming_matches
+from proracle.fixtures
+where status = 'SCHEDULED' and kickoff_at > now() and competition_name is not null
+group by competition_name
+order by upcoming_matches desc;</pre>
+    <div class="see">Copy the name exactly as shown into <code>only ...</code> or <code>skip ...</code>.</div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>Tickets and their size</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>select ticket_date, ticket_kind, fixture_count, pool_size, frozen_at
+from proracle.tickets
+order by created_at desc
+limit 20;</pre>
+    <div class="see">The new minimum shows up here: a SIMULATED ticket with a <code>fixture_count</code> between 10 and 19 is a short ticket.</div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>What the bot has learned about names</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>select r.observed_at, r.home_team as typed_home, f.home_team as stored_home,
+       r.away_team as typed_away, f.away_team as stored_away
+from proracle.intake_ticket_rows r
+join proracle.fixtures f on f.id = r.matched_fixture_id
+where r.home_team <> f.home_team or r.away_team <> f.away_team
+order by r.observed_at desc;</pre>
+    <div class="see">Each row is a spelling from a PDF that the bot tied to a stored name. These pairs are its memory.</div>
+  </div>
+
+  <div class="sql" data-sql>
+    <div class="top"><b>What the bot did (audit log)</b><button class="btn ghost" type="button" data-copy>Copy</button></div>
+<pre>select created_at, action, outcome, detail
+from proracle.intake_audit
+order by created_at desc
+limit 30;</pre>
+    <div class="see">Short notes only, never your messages. A ticket row says things like <code>read=20 kept=20 matched=10 remembered=5 similar=5</code>.</div>
+  </div>
+</section>
+
+<section id="learn">
+  <h2>How it learns</h2>
+  <p class="say">Three different things, so you know which one to watch.</p>
+  <div class="grid g4">
+    <div class="card"><span class="chip a">memory</span><h3>Team names: yes</h3><p>Every PDF row it matched teaches it a spelling. Next time that spelling works at once.</p></div>
+    <div class="card"><span class="chip c">model</span><h3>Arm A: on its own</h3><p>The rating model keeps reading finished results by itself. You do not train it, and rules do not change it.</p></div>
+    <div class="card"><span class="chip b1">rules</span><h3>Rules: you learn</h3><p>The system never edits a rule. It shows you the scores. You decide: keep it, retire it, try another.</p></div>
+  </div>
+
+  <h3>The name memory, in three pictures</h3>
+  <div class="diagram">
+    <svg viewBox="0 0 760 170" role="img" aria-label="Brighton is matched by similarity, then remembered">
+      <g font-size="14">
+        <rect x="14" y="30" width="190" height="64" rx="10" fill="var(--surface-2)" stroke="var(--line)" stroke-width="2"/>
+        <text x="109" y="55" text-anchor="middle" font-weight="600">PDF says</text><text x="109" y="78" text-anchor="middle" class="mono" style="font-family:var(--mono)">Brighton</text>
+        <path d="M208 62h64" stroke="var(--muted)" stroke-width="3" fill="none"/><path d="M266 55l8 7-8 7" stroke="var(--muted)" stroke-width="3" fill="none"/>
+        <rect x="280" y="30" width="210" height="64" rx="10" fill="color-mix(in srgb, var(--b1) 14%, var(--surface))" stroke="var(--b1)" stroke-width="2"/>
+        <text x="385" y="55" text-anchor="middle" font-weight="600">1st time: "similar"</text><text x="385" y="78" text-anchor="middle" style="font-family:var(--mono)" font-size="12.5">= Brighton &amp; Hove Albion</text>
+        <path d="M494 62h46" stroke="var(--muted)" stroke-width="3" fill="none"/><path d="M534 55l8 7-8 7" stroke="var(--muted)" stroke-width="3" fill="none"/>
+        <rect x="548" y="30" width="198" height="64" rx="10" fill="color-mix(in srgb, var(--accent) 14%, var(--surface))" stroke="var(--accent)" stroke-width="2"/>
+        <text x="647" y="55" text-anchor="middle" font-weight="600">Next time: "remembered"</text><text x="647" y="78" text-anchor="middle" class="m" font-size="12.5">matched at once</text>
+      </g>
+      <text class="m" x="385" y="128" font-size="13" text-anchor="middle">The first time, the bot lists the guess in its reply so you can check it.</text>
+      <text class="m" x="385" y="148" font-size="13" text-anchor="middle">After that the line says: "N matched through names I remembered from earlier tickets".</text>
+    </svg>
+  </div>
+
+  <div class="good"><b>Experiment:</b> send the same PDF twice (each send uses one of the day's 10 reads). Compare the two replies. The second should list fewer "check these" matches and say how many it remembered. The audit-log query shows <code>remembered=</code> as a number.</div>
+
+  <h3>What it cannot learn yet</h3>
+  <div class="note">Names that share no whole word with the stored name never match, for example Hearts, RB Salzburg and Olympiakos from your first PDF. The bot does not guess. An <b>alias command</b> would let you teach it those by hand; we agreed to decide that after you send about 10 PDFs and we can see which names keep failing. There is also no "forget" button yet: if you ever see a wrong pair in the "what the bot has learned" query, tell me.</div>
+</section>
+
+<section id="read">
+  <h2>Reading results without fooling yourself</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Small numbers lie</h3>
+      <p>Slide to see how far a hit rate can wobble by pure luck. The bot prints the same margin next to every rate.</p>
+      <div class="row"><label for="n-range">Settled picks</label><input type="range" id="n-range" min="10" max="800" value="40" step="10"><b class="mono" id="n-val">40</b></div>
+      <div class="bar" aria-hidden="true"><u></u><i id="n-bar"></i></div>
+      <p id="n-text"></p>
+    </div>
+    <div class="card">
+      <h3>Four habits</h3>
+      <p><b>1.</b> Compare a rule with A <b>on the same fixtures</b>. The scoreboard prints that for you.<br>
+      <b>2.</b> Look at <b>"where it differs from A"</b>. That is the only place a rule can win or lose.<br>
+      <b>3.</b> Count a fixture <b>once</b>. The same PDF sent twice makes two tickets with the same games.<br>
+      <b>4.</b> On a short 10-game ticket, C forces 5 draws, which is half its picks. Read C with that in mind.</p>
+    </div>
+  </div>
+  <div class="note"><b>Plain truth:</b> a few days of results cannot separate rules that differ by a few points. Wait for hundreds of settled picks before believing a gap. The scoreboard is a report card, not evidence of an edge, and not advice to stake money.</div>
+</section>
+
+<section id="stuck">
+  <h2>If the bot says...</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>The bot says</th><th>It means</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>5 rules are already active (v1, v2 ...)</td><td>All five slots are full.</td><td><code>/retire 2</code>, then YES, then propose again.</td></tr>
+      <tr><td>That is the same as active rule v1</td><td>You repeated a rule (even with leagues in another order). It would only copy that player.</td><td>Change one thing, such as the count.</td></tr>
+      <tr><td>Nothing is waiting for YES</td><td>No proposal is open, or it expired after 60 minutes.</td><td>Send the <code>/rule</code> or <code>/retire</code> again.</td></tr>
+      <tr><td>Answer YES or NO to what is already waiting first</td><td>Only one question can wait at a time.</td><td>Answer YES or NO.</td></tr>
+      <tr><td>Rule v9 is not active</td><td>That version is not in the active list.</td><td><code>/rules</code> shows the right numbers.</td></tr>
+      <tr><td>No settled ticket picks yet</td><td>Games have not finished, or the next scheduled run has not recorded them.</td><td>Wait for the next 08:37 or 20:37 run.</td></tr>
+      <tr><td>The reading service did not accept or answer that request</td><td>The PDF read failed on the vendor side.</td><td>Try again later. Nothing was frozen.</td></tr>
+      <tr><td>The daily limit of 10 screenshot reads is used up. It resets at 00:00 UTC.</td><td>You have used the 10 PDF reads for the UTC day (03:00 Nairobi time).</td><td>Wait for the reset. Commands like <code>/rules</code> still work.</td></tr>
+      <tr><td>No reply at all</td><td>Only your own private chat is answered.</td><td>Check you are writing to the right bot, in a private chat.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="card">
+  <h2>Cheat sheet</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>You type</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td><code>/rule 3 draws; 2 upsets by margin; only La Liga</code></td><td>Proposes a rule. Nothing runs until YES.</td></tr>
+      <tr><td><code>YES</code></td><td>Confirms what you were last asked: start the rule, or stop the rule.</td></tr>
+      <tr><td><code>NO</code></td><td>Cancels it.</td></tr>
+      <tr><td><code>/retire 3</code></td><td>Asks to stop rule 3 (then YES).</td></tr>
+      <tr><td><code>/rules</code></td><td>Lists the active rules and anything waiting.</td></tr>
+      <tr><td><code>/ticket</code></td><td>Today's tickets and every player's picks.</td></tr>
+      <tr><td><code>/scoreboard</code></td><td>The report card, per ticket kind.</td></tr>
+      <tr><td>send a PDF or photo</td><td>Reads up to 20 fixtures, matches them, freezes A, C and every rule before kickoff.</td></tr>
+      <tr><td><code>/help</code></td><td>Commands, limits and what the bot cannot do.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="grid g2">
+    <div class="card"><h3>Rule words</h3><p><code>N draws</code> (1 to 10)<br><code>N upsets by margin</code> or <code>by odds</code><br><code>only League, League</code> or <code>skip League</code> (not both)</p></div>
+    <div class="card"><h3>Limits</h3><p>5 rules at once. 20 fixtures per PDF ticket. 10 PDF reads per UTC day. Files up to 10 MB. Daily ticket from 10 games, up to 20. Waiting questions expire after 60 minutes.</p></div>
+  </div>
+  <div class="card"><h3>What the bot will never do</h3><p>Change the model or arm A. Put odds into A or C. Give stake, bankroll or profit advice. Start or stop a rule without your YES. Answer any chat but yours.</p></div>
+</section>
+
+<footer>PRORACLE research tool. Calibration tracking only: this is not betting advice and says nothing about returns. All numbers in the chat examples are made up to show the shape of the replies.</footer>
+</main>
+
+<script>
+(function () {
+  function copy(text, done) {
+    function fallback() {
+      var ta = document.createElement("textarea"); ta.value = text; ta.setAttribute("readonly", "");
+      ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(true); } catch (e) { done(false); }
+      document.body.removeChild(ta);
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+      } else { fallback(); }
+    } catch (e) { fallback(); }
+  }
+
+  // copy buttons on the SQL boxes
+  document.querySelectorAll("[data-sql]").forEach(function (box) {
+    var btn = box.querySelector("[data-copy]"); var pre = box.querySelector("pre");
+    btn.addEventListener("click", function () {
+      copy(pre.textContent, function (ok) {
+        btn.textContent = ok ? "Copied" : "Press Ctrl+C";
+        if (!ok) { var r = document.createRange(); r.selectNodeContents(pre); var s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+        setTimeout(function () { btn.textContent = "Copy"; }, 1800);
+      });
+    });
+  });
+
+  // rule builder (same grammar and wording as the bot)
+  var draws = document.getElementById("b-draws"), ups = document.getElementById("b-ups"), basis = document.getElementById("b-basis");
+  var scope = document.getElementById("b-scope"), leagues = document.getElementById("b-leagues");
+  var out = document.getElementById("b-out"), plain = document.getElementById("b-plain");
+  for (var i = 1; i <= 10; i++) {
+    draws.add(new Option(String(i), String(i))); ups.add(new Option(String(i), String(i)));
+  }
+  draws.value = "3"; ups.value = "0";
+  function build() {
+    leagues.disabled = scope.value === "all";
+    var parts = [], words = [];
+    if (draws.value !== "0") { parts.push(draws.value + " draws"); words.push("force the " + draws.value + " highest draw scores to DRAW"); }
+    if (ups.value !== "0") {
+      parts.push(ups.value + " upsets by " + basis.value);
+      words.push("reverse " + ups.value + " picks chosen by " + (basis.value === "margin" ? "smallest model margin" : "largest model-vs-market gap (needs odds)"));
+    }
+    var names = leagues.value.split(",").map(function (s) { return s.trim().replace(/\s+/g, " "); }).filter(Boolean);
+    var msg = "";
+    if (scope.value !== "all") {
+      if (names.length === 0) { msg = "Type at least one league name."; }
+      else { parts.push(scope.value + " " + names.join(", ")); words.push((scope.value === "only" ? "only" : "skip") + " leagues: " + names.join(", ")); }
+    }
+    if (parts.length === 0 && !msg) msg = "Pick at least one thing for the rule to do.";
+    if (draws.value === "0" && ups.value === "0" && scope.value !== "all" && !msg) msg = "A league choice alone does nothing: add draws or reversals.";
+    out.textContent = "/rule " + parts.join("; ");
+    var extra = (ups.value !== "0" && basis.value === "odds") ? " This rule needs odds, so it only plays on PDF tickets that show odds." : "";
+    plain.textContent = msg || ("In words: " + words.join("; ") + "." + extra);
+  }
+  [draws, ups, basis, scope, leagues].forEach(function (el) { el.addEventListener("input", build); el.addEventListener("change", build); });
+  build();
+  document.getElementById("b-copy").addEventListener("click", function () {
+    var tag = document.getElementById("b-copied");
+    copy(out.textContent, function (ok) { tag.textContent = ok ? "Copied. Paste it into Telegram." : "Select the line above and press Ctrl+C."; setTimeout(function () { tag.textContent = ""; }, 2500); });
+  });
+
+  // margin-of-error slider (98 / sqrt(n) points, the same formula the bot prints)
+  var range = document.getElementById("n-range"), nval = document.getElementById("n-val"), bar = document.getElementById("n-bar"), ntext = document.getElementById("n-text");
+  function margin() {
+    var n = Number(range.value), m = Math.round(98 / Math.sqrt(n));
+    nval.textContent = String(n);
+    bar.style.width = Math.min(100, m * 2) + "%";
+    ntext.textContent = "With " + n + " settled picks, a 50% hit rate could really be anywhere from " + (50 - m) + "% to " + (50 + m) + "% (±" + m + " points). A gap between two players smaller than that is most likely noise.";
+  }
+  range.addEventListener("input", margin); margin();
+})();
+</script>
+</body>
+</html>
