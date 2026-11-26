@@ -26,8 +26,10 @@ DESIGN_VERSION = "sim-v1"
 DRAW_ARM_VERSION = "draw-score-v1"
 TICKET_SIZE = 20
 FORCED_DRAWS = 5
-# A day's pool must hold a full ticket, so tickets stay comparable from day to day.
-MIN_POOL = TICKET_SIZE
+# A day's pool below this skips the day. A pool between MIN_POOL and TICKET_SIZE gives a shorter
+# ticket (every usable fixture); the ticket's fixture_count records its size. Arm C still forces up
+# to FORCED_DRAWS draws, so on a short ticket a larger share of its picks are draws.
+MIN_POOL = 10
 POOL_WINDOW = timedelta(hours=24)
 # Prior weight, in matches, pulling a competition's draw rate toward the global rate.
 SHRINK_MATCHES = 40
