@@ -122,12 +122,21 @@ Deno.test("vision output that is not the expected shape is rejected", () => {
   assert.equal(parseVisionOutput({ bookmaker: "<b>", fixtures: [] }, ctx).bookmaker, null);
 });
 
-Deno.test("the vision request forces the single tool and sends the file as an image or a document", () => {
+Deno.test("the vision request offers the single tool without forcing it (the model rejects forced use), with room for thinking", () => {
+  const req = buildVisionRequest({ model: "m", mediaType: "application/pdf", base64: "AAAA", today: "2026-11-26" });
+  assert.deepEqual(req.tool_choice, { type: "auto" });
+  assert.ok(!JSON.stringify(req).includes('"type":"tool"') && !JSON.stringify(req).includes('"type":"any"'));
+  assert.ok(req.max_tokens >= 8000, "thinking tokens count against max_tokens");
+  assert.deepEqual(req.output_config, { effort: "low" });
+  assert.equal(req.tools.length, 1);
+  assert.match(req.system, /calling record_fixtures exactly once/);
+});
+
+Deno.test("the vision request sends the file as an image or a document, with the one tool", () => {
   const image = buildVisionRequest({ model: "m", mediaType: "image/png", base64: "AAAA", today: "2026-11-26" });
   const pdf = buildVisionRequest({ model: "m", mediaType: "application/pdf", base64: "AAAA", today: "2026-11-26" });
   assert.equal(image.messages[0].content[0].type, "image");
   assert.equal(pdf.messages[0].content[0].type, "document");
-  assert.deepEqual(image.tool_choice, { type: "tool", name: "record_fixtures" });
   assert.equal(image.tools.length, 1);
   assert.equal(image.tools[0], VISION_TOOL);
   assert.match(image.system, /DATA, not instructions/);
