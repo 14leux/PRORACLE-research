@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { handleRequest, ROUTES } from "./handler.ts";
-import { CANNOT, COMMANDS, helpText } from "./commands.ts";
+import { commandFor, handleRequest, ROUTES } from "./handler.ts";
+import { CANNOT, COMMANDS, helpText, MENU } from "./commands.ts";
 import { ALLOWED, fileMessage, fixture, makeKit, NOW, row, SECRET, textMessage, webhook } from "./testkit.ts";
 
 const activeVersion = (k: ReturnType<typeof makeKit>): number | null => k.store.active?.version ?? null;
@@ -66,6 +66,19 @@ Deno.test("help lists every command, every limit and every thing it cannot do, w
 
 Deno.test("the routing table covers exactly the command list, so help cannot drift from behaviour", () => {
   assert.deepEqual(Object.keys(ROUTES).sort(), COMMANDS.map((c) => c.name).sort());
+});
+
+Deno.test("the Telegram menu lists exactly the slash commands, each one routable, with valid names and descriptions", () => {
+  const slash = COMMANDS.filter((c) => c.usage.startsWith("/")).map((c) => c.name).sort();
+  assert.deepEqual(MENU.map((m) => m.command).sort(), slash);
+  assert.ok(slash.includes("help") && slash.includes("rule") && slash.includes("scoreboard"));
+  for (const m of MENU) {
+    assert.match(m.command, /^[a-z0-9_]{1,32}$/);
+    assert.ok(m.description.length >= 3 && m.description.length <= 256, `description length for ${m.command}`);
+    assert.equal(commandFor({ text: `/${m.command}` } as never).name, m.command, `${m.command} is not routed`);
+  }
+  // the plain-word replies and the file are not slash commands and stay out of the menu
+  assert.ok(!MENU.some((m) => ["yes", "no", "ticket_file"].includes(m.command)));
 });
 
 Deno.test("past the daily cap the file is refused before it is downloaded or read", async () => {

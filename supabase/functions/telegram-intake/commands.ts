@@ -7,6 +7,8 @@ export interface CommandSpec {
   readonly name: string;
   readonly usage: string;
   readonly summary: string;
+  /** Short text for Telegram's command menu; present only on slash commands (3-256 characters). */
+  readonly menu?: string;
 }
 
 export const MAX_FIXTURES = 20;
@@ -26,18 +28,35 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage: "/rule <directives separated by ;>",
     summary:
       "Propose a rule set for arm B, for example: /rule 5 draws; 4 upsets by margin; only Premier League, La Liga. Directives: N draws, N upsets by margin|odds, only <leagues>, skip <leagues>. I echo it back and it is used only after YES.",
+    menu: "Propose a rule for arm B (confirm with YES)",
   },
   { name: "yes", usage: "YES", summary: `Activate the rule I last proposed (it waits ${PENDING_RULE_MINUTES} minutes).` },
   { name: "no", usage: "NO", summary: "Cancel the rule I last proposed." },
-  { name: "rules", usage: "/rules", summary: "Show the active rule set and any proposal waiting for YES." },
-  { name: "ticket", usage: "/ticket", summary: "Show today's tickets and each arm's picks." },
+  {
+    name: "rules",
+    usage: "/rules",
+    summary: "Show the active rule set and any proposal waiting for YES.",
+    menu: "Show the active rule set",
+  },
+  {
+    name: "ticket",
+    usage: "/ticket",
+    summary: "Show today's tickets and each arm's picks.",
+    menu: "Today's tickets and each arm's picks",
+  },
   {
     name: "scoreboard",
     usage: "/scoreboard",
     summary: "Hit rate of each arm on settled ticket picks. A calibration report card, not evidence of an edge.",
+    menu: "Arm hit rates on settled picks",
   },
-  { name: "help", usage: "/help", summary: "Show this list." },
+  { name: "help", usage: "/help", summary: "Show this list.", menu: "What I can do, limits and what I cannot do" },
 ];
+
+/** Telegram's command menu (setMyCommands), derived from the same list so it cannot drift from /help. */
+export const MENU: readonly { readonly command: string; readonly description: string }[] = COMMANDS
+  .filter((c) => c.menu !== undefined)
+  .map((c) => ({ command: c.name, description: c.menu as string }));
 
 /** Things this bot will not do, listed in /help and covered by a test. */
 export const CANNOT: readonly string[] = [
