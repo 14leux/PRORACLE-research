@@ -162,6 +162,32 @@ Deno.test("callVision sends the key as a header and returns only the forced tool
   }
 });
 
+Deno.test("a failed vision request records why: HTTP status, the API's error type and a short cleaned message, never the key", async () => {
+  const body = buildVisionRequest({ model: "m", mediaType: "application/pdf", base64: "AAAA", today: "2026-11-26" });
+  const reasonOf = async (fn: (url: string, init?: RequestInit) => Promise<Response>) => {
+    try {
+      await callVision(fn, "KEY-PLACEHOLDER", body);
+    } catch (e) {
+      assert.ok(e instanceof VisionError);
+      return e.reason;
+    }
+    throw new Error("expected a failure");
+  };
+  const api = (status: number, error: unknown) => async () => new Response(JSON.stringify({ type: "error", error }), { status });
+  assert.equal(
+    await reasonOf(api(400, { type: "invalid_request_error", message: "Your credit balance is too low to access the API." })),
+    "HTTP 400 invalid_request_error Your credit balance is too low to access the API.",
+  );
+  assert.equal(await reasonOf(api(401, { type: "authentication_error", message: "invalid x-api-key" })), "HTTP 401 authentication_error invalid x-api-key");
+  assert.equal(await reasonOf(async () => new Response("<html>bad gateway</html>", { status: 502 })), "HTTP 502");
+  assert.equal(await reasonOf(() => Promise.reject(new TypeError("fetch failed KEY-PLACEHOLDER"))), "network TypeError");
+  // long, odd or control-character text is cut and cleaned
+  const long = await reasonOf(api(400, { type: "Invalid Type!", message: "line1\nline2\u0000" + "x".repeat(500) }));
+  assert.ok(long!.length <= 150 && !/[\n\u0000]/.test(long!), long!);
+  assert.match(long!, /^HTTP 400 InvalidType/);
+  assert.equal(await reasonOf(api(404, { type: "not_found_error", message: "model: claude-x" })), "HTTP 404 not_found_error model: claude-x");
+});
+
 // --- matching ----------------------------------------------------------------------------------
 
 Deno.test("team names are normalised for case, accents, punctuation and club affixes only", () => {

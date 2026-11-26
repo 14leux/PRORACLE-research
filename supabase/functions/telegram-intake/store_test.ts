@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { PostgrestStore, StoreError } from "./store.ts";
-import { TelegramHttp } from "./telegram.ts";
+import { TelegramError, TelegramHttp } from "./telegram.ts";
 
 interface Seen {
   url: string;
@@ -148,6 +148,21 @@ Deno.test("Telegram menu sync: nothing is written when the menu already matches,
   // an unreadable current menu is replaced rather than trusted
   const unreadable = recorder(json({ ok: false }), json({ ok: true, result: true }));
   assert.equal(await new TelegramHttp("t", unreadable.fn).syncMenu(menu), "UPDATED");
+});
+
+Deno.test("Telegram errors carry the HTTP status and Telegram's description as a reason, never the token", async () => {
+  const notFound = recorder(json({ ok: false, error_code: 404, description: "Not Found" }, 404));
+  await assert.rejects(
+    () => new TelegramHttp("123:SECRET-TOKEN", notFound.fn).syncMenu([{ command: "help", description: "Help me" }]),
+    (e: unknown) => e instanceof TelegramError && e.reason === "HTTP 404 Not Found" && !e.reason.includes("SECRET-TOKEN") && !e.message.includes("SECRET-TOKEN"),
+  );
+  const html = recorder(new Response("<html>", { status: 502 }));
+  await assert.rejects(() => new TelegramHttp("t", html.fn).send("1", "x"), (e: unknown) => e instanceof TelegramError && e.reason === "HTTP 502");
+  const down = recorder(new Error("boom https://api.telegram.org/bot123:SECRET-TOKEN/sendMessage"));
+  await assert.rejects(
+    () => new TelegramHttp("123:SECRET-TOKEN", down.fn).send("1", "x"),
+    (e: unknown) => e instanceof TelegramError && e.reason === "network",
+  );
 });
 
 Deno.test("Telegram menu sync: a refusal or a network error is a TelegramError that never carries the token", async () => {

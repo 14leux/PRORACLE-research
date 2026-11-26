@@ -17,7 +17,8 @@ export interface MenuEntry {
 }
 
 export class TelegramError extends Error {
-  constructor() {
+  /** A short note for the audit log: the HTTP status and Telegram's own description, never the token. */
+  constructor(readonly reason: string = "") {
     super("telegram request failed");
   }
 }
@@ -37,11 +38,17 @@ export class TelegramHttp implements TelegramApi {
         signal: AbortSignal.timeout(20_000),
       });
     } catch {
-      throw new TelegramError();
+      throw new TelegramError("network");
     }
     if (!response.ok) {
-      await response.body?.cancel();
-      throw new TelegramError();
+      let description = "";
+      try {
+        const data = (await response.json()) as { description?: unknown };
+        if (typeof data?.description === "string") description = data.description.replace(/[^\x20-\x7e]/g, " ").trim().slice(0, 80);
+      } catch {
+        /* not JSON */
+      }
+      throw new TelegramError(`HTTP ${response.status} ${description}`.trim());
     }
     return await response.json();
   }
