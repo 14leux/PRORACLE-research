@@ -62,9 +62,14 @@ class WorkflowRulesTest(unittest.TestCase):
         self.assertEqual(len(re.findall(r"github\.event\.inputs\.intake_id", text)), 1)
         self.assertNotRegex(text.lower(), r"service_role")
 
-    def test_ci_runs_the_deno_tests_with_a_pinned_action_and_no_secrets(self) -> None:
+    def test_ci_runs_the_deno_tests_from_a_checksummed_release_with_no_third_party_action_or_secrets(self) -> None:
         text = code(ROOT / ".github" / "workflows" / "ci.yml")
-        self.assertRegex(text, r"uses: denoland/setup-deno@[0-9a-f]{40}")
+        # The repository allows GitHub-owned actions only, so a third-party setup action would stop
+        # the whole workflow from starting (startup_failure); Deno is a pinned, verified download.
+        self.assertNotIn("setup-deno", text)
+        self.assertRegex(text, r"VERSION=2\.9\.8")
+        self.assertRegex(text, r"SHA256=[0-9a-f]{64}")
+        self.assertIn('sha256sum --check -', text)
         self.assertIn("deno test --no-prompt --no-remote supabase/functions/telegram-intake/", text)
         self.assertNotIn("--allow-", text)  # the tests get no permissions at all
         self.assertNotIn("secrets.", text)
