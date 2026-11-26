@@ -148,17 +148,18 @@ class ArmTests(unittest.TestCase):
         self.assertEqual(forced, sorted(ticket.fixtures)[:5])
 
     def test_no_ticket_when_the_pool_is_short_or_history_is_missing(self) -> None:
-        self.assertIsNone(tk.build_ticket(self.pool()[:19], COUNTS, DAY, NOW))
+        self.assertIsNone(tk.build_ticket(self.pool()[: tk.MIN_POOL - 1], COUNTS, DAY, NOW))
+        self.assertIsNotNone(tk.build_ticket(self.pool()[: tk.MIN_POOL], COUNTS, DAY, NOW))
         self.assertIsNone(tk.build_ticket(self.pool(), tk.DrawCounts({}, 0, 0), DAY, NOW))
 
     def test_fixtures_that_have_already_kicked_off_are_not_in_the_pool(self) -> None:
-        pool = [cand(i) for i in range(21)]
+        pool = [cand(i) for i in range(11)]
         pool[0] = cand(0, kickoff=NOW)  # kicks off now: cannot be frozen before kickoff
         pool[1] = cand(1, kickoff=NOW - timedelta(hours=1))
-        self.assertIsNone(tk.build_ticket(pool, COUNTS, DAY, NOW))  # 19 left
+        self.assertIsNone(tk.build_ticket(pool, COUNTS, DAY, NOW))  # 9 left
         ticket = tk.build_ticket(pool + [cand(99)], COUNTS, DAY, NOW)
         assert ticket is not None
-        self.assertEqual(ticket.pool_size, 20)
+        self.assertEqual(ticket.pool_size, tk.MIN_POOL)
         self.assertNotIn("fx-000", ticket.fixtures)
         self.assertNotIn("fx-001", ticket.fixtures)
 
@@ -212,11 +213,33 @@ class RunDailyTicketTests(unittest.TestCase):
         self.assertEqual(store.appended, [])
         self.assertIsNone(store.pool_args)
 
-    def test_a_short_pool_skips_the_day(self) -> None:
-        store = FakeTicketStore([cand(i) for i in range(10)])
+    def test_a_pool_below_the_minimum_skips_the_day(self) -> None:
+        store = FakeTicketStore([cand(i) for i in range(tk.MIN_POOL - 1)])
         out = tk.run_daily_ticket(store, NOW)
         self.assertEqual((out["ticket_skipped"], out["ticket_created"], out["ticket_errors"]), (1, 0, 0))
         self.assertEqual(store.appended, [])
+
+    def test_a_pool_at_the_minimum_gives_a_short_ticket_with_every_fixture(self) -> None:
+        self.assertEqual(tk.MIN_POOL, 10)
+        store = FakeTicketStore([cand(i) for i in range(10)])
+        out = tk.run_daily_ticket(store, NOW)
+        self.assertEqual((out["ticket_created"], out["ticket_skipped"]), (1, 0))
+        ticket = store.appended[0]
+        self.assertEqual(len(ticket.fixtures), 10)
+        self.assertEqual(len(set(ticket.fixtures)), 10)
+        self.assertEqual(len(ticket.picks), 20)
+        self.assertEqual(ticket.pool_size, 10)
+        self.assertEqual(sum(1 for p in ticket.picks if p.arm == "C" and p.forced), tk.FORCED_DRAWS)
+
+    def test_a_pool_between_minimum_and_full_size_uses_the_whole_pool(self) -> None:
+        store = FakeTicketStore([cand(i) for i in range(17)])
+        tk.run_daily_ticket(store, NOW)
+        self.assertEqual(len(store.appended[0].fixtures), 17)
+
+    def test_a_pool_above_full_size_is_still_capped_at_twenty(self) -> None:
+        store = FakeTicketStore([cand(i) for i in range(23)])
+        tk.run_daily_ticket(store, NOW)
+        self.assertEqual(len(store.appended[0].fixtures), tk.TICKET_SIZE)
 
     def test_a_failure_anywhere_is_counted_and_never_raised(self) -> None:
         for where in ("exists", "pool", "append"):
