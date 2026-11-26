@@ -69,6 +69,10 @@ class ShotRow:
     competition_name: str | None
 
 
+UNMATCHED = "not matched to a stored fixture"
+MAX_DROPPED_LISTED = 10
+
+
 @dataclass(frozen=True)
 class Dropped:
     row: ShotRow
@@ -195,7 +199,7 @@ def build_shot_ticket(
     dropped: list[Dropped] = []
     for row in rows:
         if row.fixture_id is None:
-            dropped.append(Dropped(row, "not matched to a stored fixture"))
+            dropped.append(Dropped(row, UNMATCHED))
             continue
         cand = candidates.get(row.fixture_id)
         if cand is None:
@@ -297,9 +301,18 @@ def format_reply(result: ShotResult) -> str:
         lines.append(result.arm_b_note)
     elif "B" not in arms:
         lines.append("No rule is active, so there is no arm B on this ticket.")
-    if result.dropped:
-        lines.append(f"Not on the ticket ({len(result.dropped)}):")
-        lines.extend(f"- {d.row.home_team} v {d.row.away_team}: {d.reason}" for d in result.dropped[:10])
+    # Rows that never matched a stored fixture were already listed by the first message (the read and
+    # match step), so only their number is repeated here; rows that matched but could not be frozen are
+    # new information and are listed with the reason.
+    unmatched = [d for d in result.dropped if d.reason == UNMATCHED]
+    other = [d for d in result.dropped if d.reason != UNMATCHED]
+    if unmatched:
+        lines.append(f"{len(unmatched)} row(s) not matched to a stored fixture are listed in the message above.")
+    if other:
+        lines.append(f"Matched but not on the ticket ({len(other)}):")
+        lines.extend(f"- {d.row.home_team} v {d.row.away_team}: {d.reason}" for d in other[:MAX_DROPPED_LISTED])
+        if len(other) > MAX_DROPPED_LISTED:
+            lines.append(f"- and {len(other) - MAX_DROPPED_LISTED} more")
     lines.append("Calibration tracking only: this is not betting advice and says nothing about returns.")
     return "\n".join(lines)
 

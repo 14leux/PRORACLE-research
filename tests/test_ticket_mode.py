@@ -289,10 +289,34 @@ class ReplyTests(unittest.TestCase):
         self.assertIn("(reversed)", text)
         self.assertIn("[A pick: model 62% vs market", text)
         self.assertIn("rule v2:", text)
-        self.assertIn("Not on the ticket (1):", text)
+        self.assertIn("1 row(s) not matched to a stored fixture are listed in the message above.", text)
+        self.assertNotIn("Home 50", text)  # an unmatched row is not repeated by name
         self.assertIn("not betting advice", text)
         for word in ("stake", "bankroll", "profit"):
             self.assertNotIn(word, text.lower().replace("not betting advice and says nothing about returns", ""))
+
+    def test_reply_lists_matched_rows_that_could_not_be_frozen_and_never_hides_how_many(self) -> None:
+        def late(i: int) -> tm.ShotRow:
+            return tm.ShotRow(100 + i, f"Late {i}", "Game", NOW + timedelta(hours=4), None, f"fx-9{i:02d}", "Premier League")
+
+        extra = [late(i) for i in range(12)] + [shot_row(60, matched=False), shot_row(61, matched=False)]
+        r = build(3, extra_rows=extra)
+        assert r is not None
+        self.assertEqual(len(r.dropped), 14)
+        text = tm.format_reply(r)
+        self.assertIn("2 row(s) not matched to a stored fixture are listed in the message above.", text)
+        self.assertIn("Matched but not on the ticket (12):", text)
+        self.assertIn("- Late 0 v Game: no pre-kickoff rating prediction", text)
+        self.assertIn("- Late 9 v Game: no pre-kickoff rating prediction", text)
+        self.assertNotIn("Late 10 v Game", text)
+        self.assertIn("- and 2 more", text)
+        # exactly ten are listed, so the total shown plus "more" equals the count
+        self.assertEqual(sum(1 for line in text.splitlines() if line.startswith("- Late ")), 10)
+        # with nothing dropped there is no such section
+        clean = build(3)
+        assert clean is not None
+        self.assertNotIn("not on the ticket", tm.format_reply(clean).lower())
+        self.assertNotIn("not matched to a stored fixture are listed", tm.format_reply(clean))
 
     def test_reply_says_when_there_is_no_arm_b(self) -> None:
         r = build()
