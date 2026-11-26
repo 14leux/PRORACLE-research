@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
 FORBIDDEN_TRIGGERS = ("pull_request_target", "workflow_run")
+SECRET_WORKFLOWS = ("runtime.yml", "ticket_intake.yml")
 USES = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S+)", re.MULTILINE)
 SHA_PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 
@@ -39,15 +40,34 @@ class WorkflowRulesTest(unittest.TestCase):
             self.assertNotRegex(text, r"(?m)^\s+(contents|id-token|actions): write", path.name)
             self.assertIn("timeout-minutes:", text, path.name)
 
-    def test_only_the_runtime_workflow_touches_secrets_and_it_uses_the_environment(self) -> None:
+    def test_only_the_runtime_workflows_touch_secrets_and_they_use_the_environment(self) -> None:
         for path in WORKFLOWS:
             text = code(path)
-            if path.name == "runtime.yml":
-                self.assertRegex(text, r"(?m)^    environment: production$")
+            if path.name in SECRET_WORKFLOWS:
+                self.assertRegex(text, r"(?m)^    environment: production$", path.name)
                 triggers = text.split("\njobs:")[0].split("\non:")[1]
-                self.assertNotIn("pull_request", triggers)
+                self.assertNotIn("pull_request", triggers, path.name)
+                if path.name == "ticket_intake.yml":
+                    # started only by the Edge Function's dispatch, never by a push or a schedule
+                    self.assertRegex(triggers, r"(?m)^  workflow_dispatch:$")
+                    self.assertNotIn("push", triggers)
+                    self.assertNotIn("schedule", triggers)
             else:
                 self.assertNotIn("secrets.", text, f"{path.name} reads secrets")
+
+    def test_the_intake_workflow_gets_its_dispatched_value_only_through_env(self) -> None:
+        text = code(ROOT / ".github" / "workflows" / "ticket_intake.yml")
+        self.assertIn("INTAKE_ID: ${{ github.event.inputs.intake_id }}", text)
+        self.assertIn('--intake-id "$INTAKE_ID"', text)
+        self.assertEqual(len(re.findall(r"github\.event\.inputs\.intake_id", text)), 1)
+        self.assertNotRegex(text.lower(), r"service_role")
+
+    def test_ci_runs_the_deno_tests_with_a_pinned_action_and_no_secrets(self) -> None:
+        text = code(ROOT / ".github" / "workflows" / "ci.yml")
+        self.assertRegex(text, r"uses: denoland/setup-deno@[0-9a-f]{40}")
+        self.assertIn("deno test --no-prompt --no-remote supabase/functions/telegram-intake/", text)
+        self.assertNotIn("--allow-", text)  # the tests get no permissions at all
+        self.assertNotIn("secrets.", text)
 
     def test_event_values_are_never_interpolated_into_run_scripts(self) -> None:
         for path in WORKFLOWS:

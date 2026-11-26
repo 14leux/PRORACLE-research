@@ -20,3 +20,7 @@ With Supabase CLI 2.117.0, a fresh local stack started from this config and appl
 ## Trade-off
 
 The small config depends on current CLI defaults for local services. If PRORACLE needs a non-default service setting, add only that setting with a reason and test it against the supported CLI version.
+
+## Addendum (2026-11-26)
+
+`supabase/config.toml` gained one project-specific setting: `[functions.telegram-intake] verify_jwt = false`. Telegram cannot send a Supabase JWT, so the function authenticates its caller with the Telegram secret-token header instead (see `docs/INTAKE.md`). Nothing else in the config changed.

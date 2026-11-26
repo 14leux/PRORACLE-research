@@ -37,8 +37,13 @@ _TABLES = frozenset(
         "tickets",
         "ticket_fixtures",
         "ticket_arm_picks",
+        # Telegram intake (migration 20261127000000); read-only for the runtime role.
+        "intake_tickets",
+        "intake_ticket_rows",
+        "intake_active_rule",
     }
 )
+_CANDIDATE_FIXTURE = "fixture:fixtures!predictions_fixture_id_fkey(competition_id,competition_name,status)"
 # Insert, and quietly keep the row that is already there when the key already exists.
 _IGNORE_DUPLICATES = "resolution=ignore-duplicates,return=minimal"
 
@@ -625,8 +630,7 @@ class SupabaseRESTStore:
                 (
                     "select",
                     "id,fixture_id,predicted_at,kickoff_at,model_name,home_win_probability,"
-                    "draw_probability,away_win_probability,"
-                    "fixture:fixtures!predictions_fixture_id_fkey(competition_id,status)",
+                    "draw_probability,away_win_probability," + _CANDIDATE_FIXTURE,
                 ),
                 ("model_name", f"eq.{model_name}"),
                 ("kickoff_at", f"gt.{_utc_text(after)}"),
@@ -634,6 +638,12 @@ class SupabaseRESTStore:
                 ("order", "predicted_at.asc,id.asc"),
             ),
         )
+        return self._earliest_candidates(rows, model_name)
+
+    def _earliest_candidates(
+        self, rows: Sequence[Mapping[str, Any]], model_name: str
+    ) -> list[Candidate]:
+        """The earliest usable prediction per scheduled fixture; rows must be ordered by predicted_at."""
         pool: dict[str, Candidate] = {}
         for row in rows:
             fixture = row.get("fixture")
@@ -658,6 +668,7 @@ class SupabaseRESTStore:
             if predicted_at >= kickoff_at or not math.isclose(sum(probabilities), 1.0, abs_tol=1e-4):
                 continue
             competition = fixture.get("competition_id")
+            name = fixture.get("competition_name")
             pool[fixture_id] = Candidate(
                 fixture_id=fixture_id,
                 competition_id=competition if isinstance(competition, str) else None,
@@ -667,8 +678,74 @@ class SupabaseRESTStore:
                 home=probabilities[0],
                 draw=probabilities[1],
                 away=probabilities[2],
+                competition_name=name if isinstance(name, str) else None,
             )
         return list(pool.values())
+
+    # --- screenshot tickets (Telegram intake): reads for proracle.ticket_mode ---------------------
+
+    def earliest_predictions(self, fixture_ids: Sequence[str], model_name: str) -> dict[str, Candidate]:
+        """One model's earliest usable pre-kickoff prediction for each of the given scheduled fixtures."""
+        if not fixture_ids or len(fixture_ids) > 40:
+            raise ValueError("between 1 and 40 fixture ids are required")
+        rows = self._fetch_all(
+            "predictions",
+            (
+                (
+                    "select",
+                    "id,fixture_id,predicted_at,kickoff_at,model_name,home_win_probability,"
+                    "draw_probability,away_win_probability," + _CANDIDATE_FIXTURE,
+                ),
+                ("model_name", f"eq.{model_name}"),
+                ("fixture_id", f"in.({','.join(fixture_ids)})"),
+                ("order", "predicted_at.asc,id.asc"),
+            ),
+        )
+        return {c.fixture_id: c for c in self._earliest_candidates(rows, model_name)}
+
+    def intake_ticket(self, intake_id: str) -> Mapping[str, Any] | None:
+        """The stored read of a screenshot or PDF (parsed values only), or None."""
+        value, _ = self._request(
+            "GET",
+            "intake_tickets",
+            query=(("select", "id,ticket_date,bookmaker_label,rows_kept,rows_matched"), ("id", f"eq.{intake_id}")),
+        )
+        rows = self._rows(value)
+        return rows[0] if rows else None
+
+    def intake_rows(self, intake_id: str) -> list[Mapping[str, Any]]:
+        """The parsed rows of one read, in the order shown, with the matched fixture's label fields."""
+        return list(
+            self._fetch_all(
+                "intake_ticket_rows",
+                (
+                    (
+                        "select",
+                        "position,home_team,away_team,kickoff_at,home_odds,draw_odds,away_odds,"
+                        "matched_fixture_id,"
+                        "fixture:fixtures!intake_ticket_rows_matched_fixture_id_fkey(competition_name)",
+                    ),
+                    ("intake_id", f"eq.{intake_id}"),
+                    ("order", "position.asc"),
+                ),
+            )
+        )
+
+    def screenshot_ticket_exists(self, intake_id: str) -> bool:
+        value, _ = self._request(
+            "GET", "tickets", query=(("select", "id"), ("intake_id", f"eq.{intake_id}"))
+        )
+        return bool(self._rows(value))
+
+    def active_rule(self) -> Mapping[str, Any] | None:
+        """The rule set in force for arm B (the intake_active_rule view), or None."""
+        value, _ = self._request(
+            "GET",
+            "intake_active_rule",
+            query=(("select", "rule_id,version,structure"), ("limit", "1")),
+        )
+        rows = self._rows(value)
+        return rows[0] if rows else None
 
     def draw_counts(self) -> DrawCounts:
         """Matches and draws per competition over every current FINAL result (corrections resolved)."""
@@ -718,21 +795,22 @@ class SupabaseRESTStore:
         when arms are scored. The ticket id is fixed by the date, so a rerun cannot create a second.
         """
         frozen = _utc_text(ticket.frozen_at)
-        self._request(
-            "POST",
-            "tickets",
-            payload={
-                "id": ticket.ticket_id,
-                "ticket_date": ticket.ticket_date.isoformat(),
-                "ticket_kind": "SIMULATED",
-                "design_version": ticket.design_version,
-                "seed": ticket.seed,
-                "pool_size": ticket.pool_size,
-                "fixture_count": len(ticket.fixtures),
-                "frozen_at": frozen,
-            },
-            prefer="return=minimal",
-        )
+        has_arm_b = any(p.arm == "B" for p in ticket.picks)
+        head: dict[str, object] = {
+            "id": ticket.ticket_id,
+            "ticket_date": ticket.ticket_date.isoformat(),
+            "ticket_kind": ticket.ticket_kind,
+            "design_version": ticket.design_version,
+            "seed": ticket.seed,
+            "pool_size": ticket.pool_size,
+            "fixture_count": len(ticket.fixtures),
+            "frozen_at": frozen,
+        }
+        if ticket.intake_id is not None:
+            # Only a screenshot ticket names its intake, so the daily simulated ticket's payload is
+            # unchanged and keeps working on a database without the intake migration.
+            head["intake_id"] = ticket.intake_id
+        self._request("POST", "tickets", payload=head, prefer="return=minimal")
         self._request(
             "POST",
             "ticket_fixtures",
@@ -757,6 +835,10 @@ class SupabaseRESTStore:
                     "source_prediction_id": pick.source_prediction_id,
                     "kickoff_at": _utc_text(pick.kickoff_at),
                     "frozen_at": frozen,
+                    # Only when the ticket has an arm B (needs the intake migration). PostgREST wants
+                    # every row of one batch to have the same keys, so then every row carries it
+                    # (null for arms A and C); without arm B the P0 payload is unchanged.
+                    **({"adjustment": pick.adjustment} if has_arm_b else {}),
                 }
                 for pick in ticket.picks
             ],

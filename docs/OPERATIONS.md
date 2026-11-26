@@ -39,7 +39,7 @@ python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_o
 
 1. In Telegram, message `@BotFather`, send `/newbot`, and follow the prompts. Keep the token it gives you private.
 2. Send any message to your new bot from the account that should receive reports.
-3. Find your chat id by opening `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser on your own machine and reading `message.chat.id`. Do not share that URL; it contains your token.
+3. Find your chat id by opening `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser on your own machine and reading `message.chat.id`. Do not share that URL; it contains your token. Do this before registering any webhook: `getUpdates` stops working while a webhook (such as the Telegram intake's) is set, so keep your chat id written down.
 4. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in your environment.
 
 Preview first. This prints the message and sends nothing:

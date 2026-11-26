@@ -14,7 +14,7 @@ PRORACLE is an open project for building and honestly evaluating football match 
 
 ## What it does not do
 
-- **It does not include bookmaker odds, staking, bankroll simulation or betting advice**, and bookmaker prices are not prediction inputs.
+- **It does not include bookmaker odds, staking, bankroll simulation or betting advice**, and bookmaker prices are not prediction inputs. The one exception is the optional Telegram intake ([docs/INTAKE.md](docs/INTAKE.md)): prices you send from your own screenshots are stored in your own database and used only by a clearly separated experimental arm and a market comparison, never by the model's predictions and never published.
 - **It does not show a winning model.** The first predictor is a smoothed outcome-frequency baseline, and the rating model has not been scored on real fixtures yet. Both exist as comparators, not as evidence of skill.
 - **It does not give you data.** You supply your own provider key, Supabase project and (optionally) Telegram bot. No maintainer accounts or datasets are shared.
 

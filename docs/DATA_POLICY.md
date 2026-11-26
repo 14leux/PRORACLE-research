@@ -9,7 +9,8 @@
 ## What must not be committed
 
 - API keys, bot tokens, database URLs with credentials, private keys, or `.env` files.
-- Raw provider responses, paid or restricted datasets, bookmaker prices, or private production exports without written redistribution permission.
+- Raw provider responses, paid or restricted datasets, bookmaker prices, or private production exports without written redistribution permission. This applies to the repository and to anything published. Parsed prices that an operator's own Telegram intake stores in the operator's own private database are not committed, shared or redistributed (see [INTAKE.md](INTAKE.md)).
+- Screenshots or PDFs of betting sites. The intake reads them in memory and never stores or publishes the file.
 - Personal information, private Telegram reports, account identifiers, or screenshots that reveal private systems.
 - Small-group or row-level output that could reveal a provider's underlying data or identify a person.
 

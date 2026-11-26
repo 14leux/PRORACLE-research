@@ -77,3 +77,24 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/gitleaks" git --redact --no-banner .
           "$RUNNER_TEMP/gitleaks" dir --redact --no-banner .
+
+  deno:
+    name: tests (Deno, Edge Function)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: "2.9.8"
+
+      - name: Type check the Telegram intake function
+        run: deno check --no-remote supabase/functions/telegram-intake/*.ts
+
+      - name: Offline Deno tests (no network, no files, no secrets, no permissions)
+        run: deno test --no-prompt --no-remote supabase/functions/telegram-intake/

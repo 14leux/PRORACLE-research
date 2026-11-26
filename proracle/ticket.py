@@ -48,6 +48,7 @@ class Candidate:
     home: float
     draw: float
     away: float
+    competition_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,8 @@ class ArmPick:
     score: float | None
     source_prediction_id: str | None
     kickoff_at: datetime
+    # Arm B only: FORCED_DRAW or REVERSED (arm C marks its forced draws with `forced`).
+    adjustment: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,9 @@ class Ticket:
     fixtures: tuple[str, ...]
     picks: tuple[ArmPick, ...]
     design_version: str = DESIGN_VERSION
+    ticket_kind: str = TICKET_KIND
+    # Set for a screenshot ticket: the stored read it was computed from.
+    intake_id: str | None = None
 
 
 class TicketStore(Protocol):

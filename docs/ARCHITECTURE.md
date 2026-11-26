@@ -15,7 +15,7 @@ In the deployed design, independently scheduled stages exchange persistent state
 
 Contributor checks should use synthetic fixtures and fake provider responses. They should run without Supabase, external APIs, model calls, or secrets. Production data access and deployment are maintainer-controlled and kept separate from pull-request workflows.
 
-The public prediction path will not fetch or store bookmaker odds, calculate betting edges, simulate stakes, or settle bankrolls. Betting economics may be explored in separate documented research using properly licensed data and evidence of executable prices.
+The public prediction path will not fetch bookmaker odds, calculate betting edges, simulate stakes, or settle bankrolls, and the prediction records themselves hold no bookmaker price. The optional Telegram intake ([INTAKE.md](INTAKE.md)) is the single exception to "store": prices the operator sends from their own screenshots are kept as parsed observations in the operator's own database and are read only by arm B of a ticket and by a model-versus-market comparison. Betting economics may be explored in separate documented research using properly licensed data and evidence of executable prices.
 
 This document describes the intended design, not a claim that these components are implemented or verified. See the README for current project status.
 

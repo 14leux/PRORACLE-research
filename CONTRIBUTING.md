@@ -32,7 +32,7 @@ Contributors may share knowledge under a name, handle, or without public attribu
 - Include tests for code changes and the exact command used to run them.
 - For model or prompt changes, compare against a fixed baseline and an untouched evaluation period. Describe leakage checks, sample size, uncertainty, and any regressions.
 - For prediction-quality claims, distinguish accuracy from probability calibration and financial return. State the evaluation cohort and limitations; synthetic results demonstrate the tooling only.
-- Do not add odds as prediction inputs, automate prompt changes, or make claims of betting profit without a separately reviewed research design and evidence.
+- Do not add odds as prediction inputs, automate prompt changes, or make claims of betting profit without a separately reviewed research design and evidence. The Telegram intake stores odds from the operator's own screenshots for one experimental arm only; keep it that way, and never route odds into the model's predictions, arm A or arm C.
 - Do not include secrets, real user data, raw provider responses, or production identifiers.
 - Do not add a dependency without describing why it is needed and checking its license.
 - Save a new model or prompt as a new versioned file. Never overwrite a released prompt, and never let a tool or a model change one automatically.
