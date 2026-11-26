@@ -8,8 +8,8 @@ It is optional, built as a Supabase Edge Function plus one workflow, and **it do
 
 1. Telegram calls your Edge Function `telegram-intake` (a webhook).
 2. The function checks the secret-token header in constant time, then that the message comes from your private chat only. Anything else is ignored and logged without its content.
-3. For a photo, an image file or a PDF it takes one of today's vision calls (a daily cap), reads the file in memory with one forced tool call to the Anthropic API, and validates the result in code: at most 20 fixtures, strict field checks, odds only when all three prices are valid.
-4. It matches each row to a stored scheduled fixture. Both team names must be equal after normalising case, accents and club affixes (FC, CF and similar), and the kickoff within three hours. Anything else is reported as unmatched and is not used. It never guesses.
+3. For a photo, an image file or a PDF it takes one of today's vision calls (a daily cap), reads the file in memory with one call to the Anthropic API (the model is told to call a single tool; any other reply is discarded), and validates the result in code: at most 20 fixtures, strict field checks, odds only when all three prices are valid.
+4. It matches each row to a stored scheduled fixture whose kickoff is within three hours, home with home and away with away, at the best level any candidate reaches: **exact** (names equal after normalising case, accents and club affixes such as FC), then **remembered** (a name that an earlier ticket of yours already matched to that stored name), then **similar** (every word of the shorter name is in the longer one, for example `BRIGHTON` and `Brighton & Hove Albion`; not when the extra words mark another side, such as U21, Women, II or B, and not for names that are only generic words such as United or City). If exactly one fixture fits at that level it is used; two or more is reported as ambiguous. Rows matched by similarity are listed in the reply so you can check them, and every match is remembered for the next ticket (read back from the stored tickets, so nothing extra is kept). Anything else is reported as unmatched and is not used.
 5. It stores the parsed rows (teams, kickoff, odds, bookmaker label) and asks GitHub to run the `Ticket intake` workflow with a narrow token.
 6. `python -m proracle.ticket_mode` freezes the arms in the existing ticket tables and replies in your chat.
 
@@ -30,7 +30,7 @@ Everything below comes from one list in `supabase/functions/telegram-intake/comm
 | `/scoreboard` | Hit rate of each arm on settled ticket picks, labelled a calibration report card. |
 | `/help` | Shows the list, the limits and what the bot cannot do. |
 
-**Limits:** at most 20 fixtures per ticket; at most 10 vision reads per UTC day (`INTAKE_DAILY_CALL_CAP`); files up to 10 MB; unmatched fixtures are reported, never guessed.
+**Limits:** at most 20 fixtures per ticket; at most 10 vision reads per UTC day (`INTAKE_DAILY_CALL_CAP`); files up to 10 MB; rows that cannot be matched are reported and not used.
 
 **What it cannot do:**
 

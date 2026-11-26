@@ -4,7 +4,7 @@
 
 import { ALLOWED_MEDIA, buildVisionRequest, parseVisionOutput, type ParsedRow, type ParsedTicket, VisionError } from "./vision.ts";
 import { COMMANDS, helpText, MAX_FILE_BYTES, MAX_FIXTURES, MAX_RULE_TEXT_CHARS, MENU, PENDING_RULE_MINUTES } from "./commands.ts";
-import { MATCH_WINDOW_MS, matchRows, type MatchedRow } from "./matching.ts";
+import { buildAliases, MATCH_WINDOW_MS, matchRows, type MatchedRow } from "./matching.ts";
 import { describeRule, parseRule } from "./rules.ts";
 import type { AuditAction, AuditOutcome, IntakeStore, UpdateKind } from "./store.ts";
 import { TelegramError, type TelegramApi } from "./telegram.ts";
@@ -248,8 +248,23 @@ const ticketFile: Route = async (c) => {
       new Date(Math.max(...kicks) + MATCH_WINDOW_MS + 1).toISOString(),
     )
     : [];
-  const matched: MatchedRow[] = matchRows(parsed.rows, stored);
+  // The matching memory: names that earlier tickets already tied to stored names. If it cannot be read,
+  // matching simply runs without it this time.
+  let aliases: Map<string, string> = new Map();
+  try {
+    aliases = buildAliases(await deps.store.matchedHistory());
+  } catch {
+    // no memory this time; leave a trace so a broken lookup is not silent
+    try {
+      await c.audit("ERROR", "ERROR", "matching memory unreadable");
+    } catch {
+      /* the audit write itself failed: nothing more to do */
+    }
+  }
+  const matched: MatchedRow[] = matchRows(parsed.rows, stored, aliases);
   const hits = matched.filter((m) => m.fixtureId !== null).length;
+  const byName = matched.filter((m) => m.via === "LOOSE");
+  const remembered = matched.filter((m) => m.via === "ALIAS").length;
   const intakeId = await deps.store.saveIntake(
     {
       updateId,
@@ -263,10 +278,20 @@ const ticketFile: Route = async (c) => {
     },
     matched,
   );
-  await c.audit("TICKET", "OK", `read=${parsed.rowsRead} kept=${parsed.rows.length} matched=${hits}`);
+  await c.audit(
+    "TICKET",
+    "OK",
+    `read=${parsed.rowsRead} kept=${parsed.rows.length} matched=${hits} remembered=${remembered} similar=${byName.length}`,
+  );
 
   const lines = [`Read ${parsed.rowsRead} row(s); using ${parsed.rows.length}. Matched ${hits}, unmatched ${matched.length - hits}.`];
   if (parsed.rowsRead > MAX_FIXTURES) lines.push(`Only the first ${MAX_FIXTURES} valid rows are used.`);
+  if (remembered > 0) lines.push(`${remembered} matched through names I remembered from earlier tickets.`);
+  if (byName.length > 0) {
+    lines.push("Matched by name similarity (check these; I will remember them for next time):");
+    for (const m of byName.slice(0, 10)) lines.push(`- ${describeRow(m.row)} = ${m.matchedTo}`);
+    if (byName.length > 10) lines.push(`- and ${byName.length - 10} more`);
+  }
   const missing = matched.filter((m) => m.fixtureId === null);
   if (missing.length > 0) {
     lines.push("Not matched (not used):");

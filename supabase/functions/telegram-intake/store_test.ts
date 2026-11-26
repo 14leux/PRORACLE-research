@@ -150,6 +150,21 @@ Deno.test("Telegram menu sync: nothing is written when the menu already matches,
   assert.equal(await new TelegramHttp("t", unreadable.fn).syncMenu(menu), "UPDATED");
 });
 
+Deno.test("the matching memory is read from the stored ticket rows with the matched fixture's names", async () => {
+  const rows = [{ home_team: "HEARTS", away_team: "MONACO", matched: { home_team: "Heart of Midlothian", away_team: "AS Monaco" } }];
+  const { fn, seen } = recorder(json(rows), json({ not: "an array" }));
+  const store = new PostgrestStore("https://p.example", KEY, fn);
+  assert.deepEqual(await store.matchedHistory(), rows);
+  assert.deepEqual(await store.matchedHistory(), []);
+  const url = new URL(seen[0].url);
+  assert.equal(url.pathname, "/rest/v1/intake_ticket_rows");
+  assert.equal(url.searchParams.get("select"), "home_team,away_team,matched:fixtures!matched_fixture_id(home_team,away_team)");
+  assert.equal(url.searchParams.get("matched_fixture_id"), "not.is.null");
+  assert.equal(url.searchParams.get("limit"), "2000");
+  assert.equal(seen[0].method, "GET");
+  assert.equal(seen[0].headers["accept-profile"], "proracle");
+});
+
 Deno.test("Telegram errors carry the HTTP status and Telegram's description as a reason, never the token", async () => {
   const notFound = recorder(json({ ok: false, error_code: 404, description: "Not Found" }, 404));
   await assert.rejects(

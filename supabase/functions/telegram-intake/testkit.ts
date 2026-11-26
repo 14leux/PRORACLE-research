@@ -2,7 +2,7 @@
 // builders for webhook requests. No network, no clock, no secrets (the values below are placeholders).
 
 import type { Deps } from "./handler.ts";
-import type { MatchedRow, StoredFixture } from "./matching.ts";
+import type { MatchedHistoryRow, MatchedRow, StoredFixture } from "./matching.ts";
 import type {
   AuditAction,
   AuditOutcome,
@@ -60,6 +60,12 @@ export class FakeStore implements IntakeStore {
   findFixtures(): Promise<StoredFixture[]> {
     this.guard("findFixtures");
     return Promise.resolve(this.fixtures);
+  }
+
+  history: MatchedHistoryRow[] = [];
+  matchedHistory(): Promise<MatchedHistoryRow[]> {
+    this.guard("matchedHistory");
+    return Promise.resolve(this.history);
   }
 
   saveIntake(ticket: IntakeInsert, rows: readonly MatchedRow[]): Promise<string> {

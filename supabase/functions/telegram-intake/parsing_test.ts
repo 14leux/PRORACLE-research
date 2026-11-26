@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describeRule, parseRule } from "./rules.ts";
 import { buildVisionRequest, callVision, kickoffUtc, parseVisionOutput, VISION_TOOL, VisionError } from "./vision.ts";
-import { matchRows, normalizeTeam } from "./matching.ts";
+import { buildAliases, looselySame, matchRows, normalizeTeam } from "./matching.ts";
 import { fixture, row } from "./testkit.ts";
 
 const ctx = { today: "2026-11-26", utcOffsetMinutes: 180 };
@@ -206,6 +206,101 @@ Deno.test("team names are normalised for case, accents, punctuation and club aff
   assert.equal(normalizeTeam("Man. City"), "man city");
   assert.notEqual(normalizeTeam("Man City"), normalizeTeam("Manchester City")); // no guessing
   assert.notEqual(normalizeTeam("Real Madrid"), normalizeTeam("Real Madrid Castilla"));
+});
+
+Deno.test("normalisation also folds letters that accents do not decompose", () => {
+  assert.equal(normalizeTeam("Jagiellonia Białystok"), normalizeTeam("JAGIELLONIA BIALYSTOK"));
+  assert.equal(normalizeTeam("Bodø/Glimt"), normalizeTeam("Bodo Glimt"));
+  assert.equal(normalizeTeam("Fenerbahçe"), "fenerbahce");
+});
+
+Deno.test("two names are loosely the same when one's words are all in the other, unless that changes the team", () => {
+  const yes: [string, string][] = [
+    ["Brighton", "Brighton & Hove Albion"],
+    ["MARSEILLE", "Olympique de Marseille"],
+    ["SL BENFICA", "Benfica"],
+    ["SCU TORREENSE", "Torreense"],
+    ["JAGIELLONIA", "Jagiellonia Białystok"],
+    ["Inter", "Inter Milan"],
+  ];
+  for (const [a, b] of yes) {
+    assert.ok(looselySame(normalizeTeam(a), normalizeTeam(b)), `${a} ~ ${b}`);
+    assert.ok(looselySame(normalizeTeam(b), normalizeTeam(a)), `${b} ~ ${a}`);
+  }
+  const no: [string, string][] = [
+    ["Manchester United", "Manchester United U21"], // youth side
+    ["Arsenal", "Arsenal Women"],
+    ["Barcelona", "Barcelona B"],
+    ["Ajax", "Ajax II"],
+    ["Real Madrid", "Real Madrid Castilla"],
+    ["United", "Manchester United"], // only a generic word
+    ["City", "Manchester City"],
+    ["Man City", "Manchester City"], // different words, not contained
+    ["RB Salzburg", "Red Bull Salzburg"],
+    ["CS U Craiova", "Universitatea Craiova"],
+    ["Juve", "Juventus"],
+    ["Alpha", "Alpha"], // equal names are exact, not loose
+    ["Atletico Madrid", "Real Madrid"],
+  ];
+  for (const [a, b] of no) assert.ok(!looselySame(normalizeTeam(a), normalizeTeam(b)), `${a} !~ ${b}`);
+});
+
+Deno.test("matching levels: exact beats remembered beats loose, ties are ambiguous, time and sides still bind", () => {
+  const mk = (home: string, away: string, kickoff = "2026-11-26T12:00:00Z") => ({
+    home_team: home, away_team: away, kickoff_at: kickoff, home_odds: null, draw_odds: null, away_odds: null,
+  });
+  const stored = [
+    fixture("brighton", "Brighton & Hove Albion", "Universitatea Craiova", "2026-11-26T12:00:00Z"),
+    fixture("hearts", "Heart of Midlothian", "AS Monaco", "2026-11-26T12:00:00Z"),
+    fixture("real", "Real Madrid", "Getafe", "2026-11-26T12:00:00Z"),
+    fixture("castilla", "Real Madrid Castilla", "Getafe", "2026-11-26T12:00:00Z"),
+    fixture("a1", "Lazio", "Torino Calcio", "2026-11-26T12:00:00Z"),
+    fixture("a2", "Lazio", "Torino Giovani", "2026-11-26T12:00:00Z"),
+    fixture("t1", "Torino", "Genoa", "2026-11-26T12:00:00Z"),
+    fixture("t2", "Torino Calcio", "Genoa", "2026-11-26T12:00:00Z"), // a loose candidate beside the exact one
+  ];
+  const aliases = new Map([["hearts", "heart of midlothian"], ["monaco", "as monaco"]]);
+  const [loose, remembered, exactWins, ambiguous, late, swapped, none, exactBesideLoose] = matchRows([
+    mk("BRIGHTON", "Universitatea Craiova"),
+    mk("Hearts", "Monaco"),
+    mk("Real Madrid", "Getafe"), // exact on "real" even though "castilla" would not be a loose match anyway
+    mk("Lazio", "Torino"), // loosely fits both Torino fixtures
+    mk("BRIGHTON", "Universitatea Craiova", "2026-11-26T15:00:01Z"), // just outside three hours
+    mk("Universitatea Craiova", "BRIGHTON"), // home and away reversed
+    mk("Brighton Rovers", "Universitatea Craiova"), // not contained: extra word on the screenshot side
+    mk("Torino", "Genoa"), // an exact fixture and a loose one: the exact one wins
+  ], stored, aliases);
+  assert.deepEqual([exactBesideLoose.fixtureId, exactBesideLoose.via], ["t1", "EXACT"]);
+  assert.deepEqual([loose.fixtureId, loose.via, loose.matchedTo], ["brighton", "LOOSE", "Brighton & Hove Albion v Universitatea Craiova"]);
+  assert.deepEqual([remembered.fixtureId, remembered.via], ["hearts", "ALIAS"]);
+  assert.deepEqual([exactWins.fixtureId, exactWins.via], ["real", "EXACT"]);
+  assert.deepEqual([ambiguous.fixtureId, ambiguous.reason, ambiguous.via], [null, "AMBIGUOUS", null]);
+  assert.deepEqual([late.fixtureId, late.reason], [null, "NO_MATCH"]);
+  assert.deepEqual([swapped.fixtureId, swapped.reason], [null, "NO_MATCH"]);
+  assert.deepEqual([none.fixtureId, none.reason], [null, "NO_MATCH"]);
+  // an alias pointing at a different team than the one stored is ignored
+  const [wrongAlias] = matchRows([mk("Hearts", "Monaco")], [fixture("x", "Hibernian", "AS Monaco", "2026-11-26T12:00:00Z")], aliases);
+  assert.equal(wrongAlias.fixtureId, null);
+});
+
+Deno.test("the matching memory keeps only names that always led to the same stored name", () => {
+  const h = (home: string, away: string, matched: [string, string] | null) => ({
+    home_team: home, away_team: away, matched: matched ? { home_team: matched[0], away_team: matched[1] } : null,
+  });
+  const aliases = buildAliases([
+    h("HEARTS", "MONACO", ["Heart of Midlothian", "AS Monaco"]),
+    h("Hearts", "Lyon", ["Heart of Midlothian", "Olympique Lyonnais"]), // same alias again: kept
+    h("Dinamo", "Celtic", ["Dinamo Zagreb", "Celtic"]),
+    h("Dinamo", "Kilmarnock", ["Dinamo Kyiv", "Kilmarnock"]), // "dinamo" now points two places: dropped
+    h("Same", "Same", ["Same", "Same"]), // equal names need no alias
+    h("Ghost", "Team", null), // an unmatched row teaches nothing
+  ]);
+  assert.equal(aliases.get("hearts"), "heart of midlothian");
+  assert.equal(aliases.get("monaco"), "as monaco");
+  assert.equal(aliases.get("lyon"), "olympique lyonnais");
+  assert.equal(aliases.has("dinamo"), false);
+  assert.equal(aliases.has("same"), false);
+  assert.equal(aliases.has("ghost"), false);
 });
 
 Deno.test("a row matches only when exactly one stored fixture fits both names and the time", () => {

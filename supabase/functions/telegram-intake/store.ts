@@ -3,7 +3,7 @@
 // stores an image or message text.
 
 import type { RuleV1 } from "./rules.ts";
-import type { MatchedRow, StoredFixture } from "./matching.ts";
+import type { MatchedHistoryRow, MatchedRow, StoredFixture } from "./matching.ts";
 import type { FetchLike } from "./vision.ts";
 
 export type UpdateKind = "IMAGE" | "PDF" | "COMMAND" | "TEXT" | "REJECTED";
@@ -68,6 +68,8 @@ export interface IntakeStore {
   /** Takes one vision call for the UTC day; false when the cap is already reached. */
   reserveCall(date: string, cap: number): Promise<boolean>;
   findFixtures(fromIso: string, toIso: string): Promise<StoredFixture[]>;
+  /** The newest ticket rows that matched a stored fixture, with that fixture's names: the matching memory. */
+  matchedHistory(): Promise<MatchedHistoryRow[]>;
   saveIntake(ticket: IntakeInsert, rows: readonly MatchedRow[]): Promise<string>;
   audit(action: AuditAction, outcome: AuditOutcome, detail: string | null, updateId: number | null): Promise<void>;
   activeRule(): Promise<RuleRecord | null>;
@@ -159,6 +161,18 @@ export class PostgrestStore implements IntakeStore {
       ],
     });
     return Array.isArray(rows) ? (rows as StoredFixture[]) : [];
+  }
+
+  async matchedHistory(): Promise<MatchedHistoryRow[]> {
+    const rows = await this.rest("GET", "intake_ticket_rows", {
+      query: [
+        ["select", "home_team,away_team,matched:fixtures!matched_fixture_id(home_team,away_team)"],
+        ["matched_fixture_id", "not.is.null"],
+        ["order", "observed_at.desc"],
+        ["limit", "2000"],
+      ],
+    });
+    return Array.isArray(rows) ? (rows as MatchedHistoryRow[]) : [];
   }
 
   async saveIntake(t: IntakeInsert, rows: readonly MatchedRow[]): Promise<string> {
