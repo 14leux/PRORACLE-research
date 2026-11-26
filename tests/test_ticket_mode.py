@@ -54,16 +54,23 @@ def probs_for(i: int):
     return table[i % len(table)]
 
 
-def build(n=10, *, rule=None, odds=(2.0, 3.4, 3.8), counts=COUNTS, extra_rows=(), league="Premier League"):
+def build(n=10, *, rule=None, rules=(), odds=(2.0, 3.4, 3.8), counts=COUNTS, extra_rows=(), league="Premier League"):
+    """`rule` is a single-rule shorthand for `rules`."""
     rows = [shot_row(i, odds=odds, league=league) for i in range(n)] + list(extra_rows)
     cands = {f"fx-{i:03d}": cand(i, probs_for(i), league=league) for i in range(n)}
     return tm.build_shot_ticket(
-        intake_id=INTAKE, ticket_date=DAY, rows=rows, candidates=cands, counts=counts, rule=rule, frozen_at=NOW
+        intake_id=INTAKE, ticket_date=DAY, rows=rows, candidates=cands, counts=counts,
+        rules=[rule] if rule is not None else list(rules), frozen_at=NOW,
     )
 
 
 def picks(result: tm.ShotResult, arm: str) -> dict[str, tm.ArmPick]:
-    return {p.fixture_id: p for p in result.ticket.picks if p.arm == arm}
+    """`arm` is A, C, or a label such as B2 (arm B of rule v2); plain "B" means every rule's arm B picks."""
+    return {
+        p.fixture_id: p
+        for p in result.ticket.picks
+        if (p.arm == arm if arm in ("A", "B", "C") else tm.arm_label(p) == arm)
+    }
 
 
 class RuleParsingTests(unittest.TestCase):
@@ -122,7 +129,7 @@ class ArmTests(unittest.TestCase):
         self.assertEqual(t.ticket_id, tm.intake_ticket_id(INTAKE))
         self.assertEqual({p.arm for p in t.picks}, {"A", "C"})
         self.assertEqual(len(t.fixtures), 10)
-        self.assertIsNone(r.arm_b_note)
+        self.assertEqual(r.rule_notes, ())
         for p in t.picks:
             self.assertGreater(p.kickoff_at, t.frozen_at)
 
@@ -165,7 +172,7 @@ class ArmTests(unittest.TestCase):
             rows=[shot_row(0), shot_row(1, matched=False), started, no_pred],
             candidates={"fx-000": cand(0), "fx-099": cand(99, hours=-1)},
             counts=COUNTS,
-            rule=None,
+            rules=[],
             frozen_at=NOW,
         )
         assert r is not None
@@ -235,7 +242,7 @@ class ArmBTests(unittest.TestCase):
         cands = {f"fx-{i:03d}": cand(i, probs_for(i)) for i in range(10)}
         r = tm.build_shot_ticket(
             intake_id=INTAKE, ticket_date=DAY, rows=rows, candidates=cands, counts=COUNTS,
-            rule=tm.Rule(1, reverse_count=2, reverse_basis="odds_disagreement"), frozen_at=NOW,
+            rules=[tm.Rule(1, reverse_count=2, reverse_basis="odds_disagreement")], frozen_at=NOW,
         )
         assert r is not None
         a = picks(r, "A")
@@ -260,7 +267,7 @@ class ArmBTests(unittest.TestCase):
             (tm.Rule(1, force_draws=2, only_leagues=("premier league",)), {f"fx-{i:03d}" for i in range(5)}),
             (tm.Rule(1, force_draws=2, skip_leagues=("Premier League",)), {f"fx-{i:03d}" for i in range(5, 10)}),
         ):
-            r = tm.build_shot_ticket(intake_id=INTAKE, ticket_date=DAY, rows=rows, candidates=cands, counts=COUNTS, rule=rule, frozen_at=NOW)
+            r = tm.build_shot_ticket(intake_id=INTAKE, ticket_date=DAY, rows=rows, candidates=cands, counts=COUNTS, rules=[rule], frozen_at=NOW)
             assert r is not None
             self.assertEqual(set(picks(r, "B")), expected)
             self.assertEqual(len(picks(r, "A")), 10)  # arms A and C still cover the whole ticket
@@ -270,12 +277,12 @@ class ArmBTests(unittest.TestCase):
         r = build(rule=tm.Rule(4, force_draws=2, only_leagues=("Nowhere League",)))
         assert r is not None
         self.assertEqual(picks(r, "B"), {})
-        self.assertIn("no fixture is in the rule's leagues", r.arm_b_note or "")
+        self.assertIn("no fixture is in the rule's leagues", " ".join(r.rule_notes))
 
     def test_the_note_reports_adjustments_that_could_not_all_be_applied(self) -> None:
         r = build(3, rule=tm.Rule(5, force_draws=10))
         assert r is not None
-        self.assertIn("3 of 10 requested adjustments applied on 3 fixture(s)", r.arm_b_note or "")
+        self.assertIn("3 of 10 requested adjustments applied on 3 fixture(s)", " ".join(r.rule_notes))
 
 
 class ReplyTests(unittest.TestCase):
@@ -283,8 +290,8 @@ class ReplyTests(unittest.TestCase):
         r = build(rule=tm.Rule(2, force_draws=2, reverse_count=1, reverse_basis="margin"), extra_rows=[shot_row(50, matched=False)])
         assert r is not None
         text = tm.format_reply(r)
-        self.assertIn("Frozen before kickoff: 10 fixture(s), arms A, B, C.", text)
-        self.assertIn("- Home 0 v Away 0: A home | B home | C", text)
+        self.assertIn("Frozen before kickoff: 10 fixture(s), arms A, B2, C.", text)
+        self.assertIn("- Home 0 v Away 0: A home | B2 home | C", text)
         self.assertIn("(forced)", text)
         self.assertIn("(reversed)", text)
         self.assertIn("[A pick: model 62% vs market", text)
@@ -318,6 +325,18 @@ class ReplyTests(unittest.TestCase):
         self.assertNotIn("not on the ticket", tm.format_reply(clean).lower())
         self.assertNotIn("not matched to a stored fixture are listed", tm.format_reply(clean))
 
+    def test_arm_labels_name_the_rule_version_and_sort_numerically(self) -> None:
+        r = build(rules=[tm.Rule(10, force_draws=1), tm.Rule(2, force_draws=1)])
+        assert r is not None
+        text = tm.format_reply(r)
+        self.assertIn("arms A, B2, B10, C.", text)
+        self.assertIn("- Home 0 v Away 0: A home | B2 ", text)
+        self.assertIn("rule v10:", text)
+        self.assertIn("rule v2:", text)
+        self.assertEqual(
+            {tm.arm_label(p) for p in r.ticket.picks}, {"A", "B2", "B10", "C"}
+        )
+
     def test_reply_says_when_there_is_no_arm_b(self) -> None:
         r = build()
         assert r is not None
@@ -325,8 +344,8 @@ class ReplyTests(unittest.TestCase):
 
 
 class FakeShotStore:
-    def __init__(self, rows, *, exists=False, intake=True, rule=None, candidates=None):
-        self._rows, self.exists, self.intake, self.rule = rows, exists, intake, rule
+    def __init__(self, rows, *, exists=False, intake=True, rules=(), candidates=None):
+        self._rows, self.exists, self.intake, self.rules = rows, exists, intake, list(rules)
         self.candidates = candidates if candidates is not None else {f"fx-{i:03d}": cand(i, probs_for(i)) for i in range(10)}
         self.appended: list[Ticket] = []
 
@@ -339,8 +358,8 @@ class FakeShotStore:
     def intake_rows(self, intake_id):
         return self._rows
 
-    def active_rule(self):
-        return self.rule
+    def active_rules(self):
+        return self.rules
 
     def earliest_predictions(self, fixture_ids, model_name):
         self.asked = (list(fixture_ids), model_name)
@@ -390,10 +409,46 @@ class RunTests(unittest.TestCase):
 
     def test_the_active_rule_is_applied_to_arm_b(self) -> None:
         rule = {"rule_id": "r", "version": 4, "structure": {"v": 1, "force_draws": {"count": 2, "basis": "draw_score"}}}
-        store = FakeShotStore(records(), rule=rule)
+        store = FakeShotStore(records(), rules=[rule])
         tm.run_ticket_mode(store, INTAKE, NOW)
         arms = {p.arm for p in store.appended[0].picks}
         self.assertEqual(arms, {"A", "B", "C"})
+
+    def test_every_active_rule_gets_its_own_arm_b_on_the_same_fixtures(self) -> None:
+        def rec(version, structure):
+            return {"rule_id": f"r{version}", "version": version, "structure": {"v": 1, **structure}}
+
+        rules = [
+            rec(7, {"reverse": {"count": 2, "basis": "margin"}}),  # given out of order on purpose
+            rec(3, {"force_draws": {"count": 2, "basis": "draw_score"}}),
+            rec(5, {"force_draws": {"count": 1, "basis": "draw_score"}, "only_leagues": ["Premier League"]}),
+        ]
+        store, sent = FakeShotStore(records(), rules=rules), []
+        tm.run_ticket_mode(store, INTAKE, NOW, sent.append)
+        ticket = store.appended[0]
+        versions = sorted({p.arm_version for p in ticket.picks if p.arm == "B"})
+        self.assertEqual(versions, ["rule-v3", "rule-v5", "rule-v7"])
+        for version in versions:  # each rule covers the same ten fixtures as arm A
+            self.assertEqual({p.fixture_id for p in ticket.picks if p.arm_version == version}, set(ticket.fixtures))
+        keys = [(p.fixture_id, p.arm, p.arm_version) for p in ticket.picks]
+        self.assertEqual(len(keys), len(set(keys)))  # the database's unique key holds
+        self.assertIn("arms A, B3, B5, B7, C.", sent[0])  # rules in version order, whatever order they were read in
+        self.assertLess(sent[0].index("rule v3:"), sent[0].index("rule v5:"))
+        self.assertLess(sent[0].index("rule v5:"), sent[0].index("rule v7:"))
+        self.assertEqual([p.arm_version for p in ticket.picks if p.arm == "B"][:1], ["rule-v3"])  # computed in version order
+
+    def test_more_than_five_active_rules_or_a_repeated_version_stops_the_run(self) -> None:
+        def rec(version):
+            return {"rule_id": f"r{version}", "version": version, "structure": {"v": 1, "force_draws": {"count": 1, "basis": "draw_score"}}}
+
+        five = FakeShotStore(records(), rules=[rec(v) for v in range(1, 6)])
+        tm.run_ticket_mode(five, INTAKE, NOW)
+        self.assertEqual(len(five.appended), 1)
+        for rules in ([rec(v) for v in range(1, 7)], [rec(1), rec(1)]):
+            store = FakeShotStore(records(), rules=rules)
+            with self.assertRaises(tm.TicketModeError):
+                tm.run_ticket_mode(store, INTAKE, NOW)
+            self.assertEqual(store.appended, [])
 
     def test_bad_input_is_a_safe_error_and_nothing_is_written(self) -> None:
         for intake in ("not-a-uuid", "", INTAKE.upper(), INTAKE + "x"):
@@ -402,7 +457,7 @@ class RunTests(unittest.TestCase):
         missing = FakeShotStore(records(), intake=False)
         with self.assertRaises(tm.TicketModeError):
             tm.run_ticket_mode(missing, INTAKE, NOW)
-        bad_rule = FakeShotStore(records(), rule={"version": 1, "structure": {"v": 9}})
+        bad_rule = FakeShotStore(records(), rules=[{"version": 1, "structure": {"v": 9}}])
         with self.assertRaises(tm.TicketModeError):
             tm.run_ticket_mode(bad_rule, INTAKE, NOW)
         for store in (missing, bad_rule):
@@ -509,17 +564,19 @@ class AdapterTests(unittest.TestCase):
             store().earliest_predictions([f"f{i}" for i in range(41)], RATING_MODEL_NAME)
 
     def test_intake_reads_use_the_intake_tables_and_the_rule_view(self) -> None:
-        rec = Recorder(Response([{"id": INTAKE}]), page([{"position": 1}]), Response([{"id": "t"}]), Response([]), Response([{"rule_id": "r", "version": 2, "structure": {"v": 1}}]), Response([]))
+        two = [{"rule_id": "r", "version": 2, "structure": {"v": 1}}, {"rule_id": "s", "version": 4, "structure": {"v": 1}}]
+        rec = Recorder(Response([{"id": INTAKE}]), page([{"position": 1}]), Response([{"id": "t"}]), Response([]), Response(two), Response([]))
         with patch("proracle.supabase_adapter.urlopen", rec):
             s = store()
             self.assertEqual(s.intake_ticket(INTAKE)["id"], INTAKE)  # type: ignore[index]
             self.assertEqual(s.intake_rows(INTAKE), [{"position": 1}])
             self.assertTrue(s.screenshot_ticket_exists(INTAKE))
             self.assertFalse(s.screenshot_ticket_exists(INTAKE))
-            self.assertEqual(s.active_rule()["version"], 2)  # type: ignore[index]
-            self.assertIsNone(s.active_rule())
+            self.assertEqual([r["version"] for r in s.active_rules()], [2, 4])
+            self.assertEqual(s.active_rules(), [])
         paths = [r.full_url.split("/rest/v1/")[1].split("?")[0] for r in rec.requests]
-        self.assertEqual(paths, ["intake_tickets", "intake_ticket_rows", "tickets", "tickets", "intake_active_rule", "intake_active_rule"])
+        self.assertEqual(paths, ["intake_tickets", "intake_ticket_rows", "tickets", "tickets", "intake_active_rules", "intake_active_rules"])
+        self.assertIn("order=version.asc", rec.requests[4].full_url)
         self.assertIn("order=position.asc", rec.requests[1].full_url)
         self.assertTrue(all(r.method == "GET" for r in rec.requests))
 
@@ -537,6 +594,19 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual({p["adjustment"] for p in b_rows}, {"FORCED_DRAW", "REVERSED", None})
         # arms A and C carry the key too, as null (see test_every_batch_has_uniform_keys)
         self.assertTrue(all(p["adjustment"] is None for p in picks_payload if p["arm"] in ("A", "C")))
+
+    def test_two_rules_write_two_arm_b_rows_per_fixture_told_apart_by_arm_version(self) -> None:
+        r = build(rules=[tm.Rule(2, force_draws=2), tm.Rule(6, reverse_count=1, reverse_basis="margin")])
+        assert r is not None
+        rec = Recorder()
+        with patch("proracle.supabase_adapter.urlopen", rec):
+            store().append_ticket(r.ticket)
+        rows = json.loads(rec.requests[2].data)
+        self.assertEqual(len(rows), 40)  # A, C and two rules on ten fixtures
+        keys = [(p["fixture_id"], p["arm"], p["arm_version"]) for p in rows]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual({p["arm_version"] for p in rows if p["arm"] == "B"}, {"rule-v2", "rule-v6"})
+        self.assertEqual(len({tuple(sorted(p)) for p in rows}), 1)  # uniform keys
 
     def test_every_batch_has_uniform_keys_because_postgrest_rejects_mixed_rows(self) -> None:
         """Found by the end-to-end run: PostgREST answers 400 PGRST102 'All object keys must match'."""
@@ -576,7 +646,7 @@ class WorkflowAndMigrationTests(unittest.TestCase):
     def test_new_tables_are_allowed_and_only_for_reads_through_the_adapter(self) -> None:
         rec = Recorder()
         with patch("proracle.supabase_adapter.urlopen", rec):
-            for table in ("intake_tickets", "intake_ticket_rows", "intake_active_rule"):
+            for table in ("intake_tickets", "intake_ticket_rows", "intake_active_rules"):
                 store()._request("GET", table)
             with self.assertRaises(ValueError):
                 store()._request("GET", "intake_audit")  # the function's audit log is not the Python side's to read

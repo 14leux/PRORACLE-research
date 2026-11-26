@@ -15,7 +15,7 @@ COMMANDS_TS = (FUNCTION / "commands.ts").read_text(encoding="utf-8")
 class IntakeDocsTests(unittest.TestCase):
     def test_every_command_and_limit_in_the_function_is_in_the_doc(self) -> None:
         usages = re.findall(r'usage: "([^"]+)"', COMMANDS_TS)
-        self.assertEqual(len(usages), 8)
+        self.assertEqual(len(usages), 9)
         for usage in usages:
             self.assertIn(f"`{usage}`", DOC, usage)
 
@@ -35,6 +35,29 @@ class IntakeDocsTests(unittest.TestCase):
         index = (FUNCTION / "index.ts").read_text(encoding="utf-8")
         self.assertIn('intEnv("INTAKE_DAILY_CALL_CAP", 10, 1, 100)', index)
         self.assertIn('need("VISION_MODEL") || "claude-sonnet-5-5"', index)
+
+    def test_the_database_allows_every_view_event_and_audit_action_the_code_uses(self) -> None:
+        migrations = ROOT / "supabase" / "migrations"
+        intake = (migrations / "20261127000000_proracle_intake.sql").read_text(encoding="utf-8")
+        multi = (migrations / "20261128000000_proracle_multi_rule.sql").read_text(encoding="utf-8")
+        store = (FUNCTION / "store.ts").read_text(encoding="utf-8")
+        adapter = (ROOT / "proracle" / "supabase_adapter.py").read_text(encoding="utf-8")
+        for view in ("intake_active_rules", "intake_pending_retirement", "intake_scoreboard"):
+            self.assertIn(f"create or replace view proracle.{view}", multi, view)
+            self.assertTrue(f'"{view}"' in store or f'"{view}"' in adapter, f"nothing reads {view}")
+        self.assertIn('"intake_active_rules"', adapter)  # the Python workflow reads every active rule
+        # the newest check constraint is the one in force, so the values must be in the multi-rule file
+        events = set(re.findall(r'ruleEvent\(rule, "([A-Z_]+)"', store))
+        self.assertEqual(events, {"ACTIVATED", "DECLINED", "RETIRE_REQUESTED", "RETIRED", "RETIRE_DECLINED"})
+        for event in events | {"PROPOSED"}:
+            self.assertIn(f"'{event}'", multi, event)
+        actions = set(re.findall(r'^\s*\| "([A-Z_]+)"', store.split("export type AuditAction")[1].split(";")[0], re.M))
+        self.assertGreaterEqual(len(actions), 13)
+        for action in actions:
+            self.assertIn(f"'{action}'", multi, action)
+        # everything the older migration allowed is still allowed
+        for action in re.findall(r"'([A-Z_]+)'", intake.split("action text not null check (action in (")[1].split("))")[0]):
+            self.assertIn(f"'{action}'", multi, action)
 
     def test_every_secret_the_function_reads_is_documented_and_none_is_a_literal(self) -> None:
         index = (FUNCTION / "index.ts").read_text(encoding="utf-8")

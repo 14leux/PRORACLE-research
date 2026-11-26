@@ -1,10 +1,10 @@
 """Compute and freeze the arms for a screenshot ticket the Telegram intake stored (docs/INTAKE.md).
 
-Started by the ``ticket_intake`` workflow with one intake id. It reads the parsed rows and the active
-rule set, computes arm A (the rating model's pick), arm C (draw-score-v1) and, when a rule set is
-active, arm B; writes them append-only before every kickoff in the existing ticket tables; and
-replies on Telegram. Odds are used only by arm B's odds-disagreement basis and by the market
-comparison line in the reply, never by arm A or arm C. No stakes, no profit claims.
+Started by the ``ticket_intake`` workflow with one intake id. It reads the parsed rows and the
+active rule sets, computes arm A (the rating model's pick), arm C (draw-score-v1) and one arm B pick
+set per active rule (up to five); writes them append-only before every kickoff in the existing ticket
+tables; and replies on Telegram. Odds are used only by a rule's odds-disagreement basis and by the
+market comparison line in the reply, never by arm A or arm C. No stakes, no profit claims.
 
 The same inputs always give the same ticket: ties break on the fixture id and the ticket id is
 derived from the intake id, so a rerun creates nothing a second time.
@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from proracle.arm_b import Rule, TicketModeError, parse_active_rules, parse_rule
 from proracle.rating import RATING_MODEL_NAME
 from proracle.ticket import (
     DRAW_ARM_VERSION,
@@ -30,32 +31,19 @@ from proracle.ticket import (
     Candidate,
     DrawCounts,
     Ticket,
+    devig,
     draw_score,
     pick_outcome,
+    rule_picks,
 )
+
+__all__ = ["Rule", "TicketModeError", "parse_rule", "devig"]  # re-exported: the intake tests and callers use them here
 
 SHOT_KIND = "SCREENSHOT"
 SHOT_DESIGN = "shot-v1"
-MAX_RULE_COUNT = 10
 _NAMESPACE = uuid.UUID("9b2f6d84-3c1e-4f7a-8d52-6e0a1c4b7f33")
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 LABEL = {"HOME_WIN": "home", "DRAW": "draw", "AWAY_WIN": "away"}
-
-
-class TicketModeError(Exception):
-    """A safe, fixed message. It never carries a URL, key or row content."""
-
-
-@dataclass(frozen=True)
-class Rule:
-    """Arm B's rule set, parsed from the fixed structure the intake stored (version 1)."""
-
-    version: int
-    force_draws: int | None = None
-    reverse_count: int | None = None
-    reverse_basis: str | None = None  # "margin" or "odds_disagreement"
-    only_leagues: tuple[str, ...] | None = None
-    skip_leagues: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -85,56 +73,7 @@ class ShotResult:
     rows: tuple[ShotRow, ...]  # the rows on the ticket, in ticket order
     dropped: tuple[Dropped, ...]
     market: Mapping[str, tuple[float, float]]  # fixture id -> (model p, de-vigged market p) for arm A's pick
-    arm_b_note: str | None
-
-
-def parse_rule(record: Mapping[str, Any]) -> Rule:
-    """Validate the stored structure; an invalid one stops the run rather than being guessed at."""
-    structure = record.get("structure")
-    if not isinstance(structure, Mapping) or structure.get("v") != 1:
-        raise TicketModeError("the active rule has an unknown structure")
-    known = {"v", "force_draws", "reverse", "only_leagues", "skip_leagues"}
-    if set(structure) - known:
-        raise TicketModeError("the active rule has an unknown field")
-
-    def count(block: object, bases: tuple[str, ...]) -> tuple[int, str]:
-        if not isinstance(block, Mapping) or set(block) != {"count", "basis"}:
-            raise TicketModeError("the active rule has a malformed directive")
-        n, basis = block["count"], block["basis"]
-        if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= MAX_RULE_COUNT or basis not in bases:
-            raise TicketModeError("the active rule has an invalid directive")
-        return n, basis
-
-    def names(value: object) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        if not isinstance(value, list) or not 1 <= len(value) <= 10 or not all(isinstance(v, str) and v for v in value):
-            raise TicketModeError("the active rule has an invalid league list")
-        return tuple(value)
-
-    force = count(structure["force_draws"], ("draw_score",)) if "force_draws" in structure else None
-    reverse = count(structure["reverse"], ("margin", "odds_disagreement")) if "reverse" in structure else None
-    only, skip = names(structure.get("only_leagues")), names(structure.get("skip_leagues"))
-    if only and skip:
-        raise TicketModeError("the active rule uses both only and skip")
-    version = record.get("version")
-    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise TicketModeError("the active rule has no version")
-    return Rule(
-        version=version,
-        force_draws=force[0] if force else None,
-        reverse_count=reverse[0] if reverse else None,
-        reverse_basis=reverse[1] if reverse else None,
-        only_leagues=only,
-        skip_leagues=skip,
-    )
-
-
-def devig(odds: tuple[float, float, float]) -> tuple[float, float, float]:
-    """Decimal 1X2 odds to fair probabilities by proportional margin removal."""
-    raw = tuple(1.0 / o for o in odds)
-    total = sum(raw)
-    return (raw[0] / total, raw[1] / total, raw[2] / total)
+    rule_notes: tuple[str, ...] = ()  # one line per active rule: what it did on this ticket
 
 
 def _model_probs(c: Candidate) -> tuple[float, float, float]:
@@ -143,20 +82,6 @@ def _model_probs(c: Candidate) -> tuple[float, float, float]:
 
 def _index(pick: str) -> int:
     return {"HOME_WIN": 0, "DRAW": 1, "AWAY_WIN": 2}[pick]
-
-
-def _margin(c: Candidate) -> float:
-    top = sorted(_model_probs(c), reverse=True)
-    return top[0] - top[1]
-
-
-def _in_scope(rule: Rule, name: str | None) -> bool:
-    label = (name or "").casefold()
-    if rule.only_leagues is not None:
-        return label in {n.casefold() for n in rule.only_leagues}
-    if rule.skip_leagues is not None:
-        return label not in {n.casefold() for n in rule.skip_leagues}
-    return True
 
 
 def parse_rows(records: Sequence[Mapping[str, Any]]) -> list[ShotRow]:
@@ -191,10 +116,10 @@ def build_shot_ticket(
     rows: Sequence[ShotRow],
     candidates: Mapping[str, Candidate],
     counts: DrawCounts,
-    rule: Rule | None,
+    rules: Sequence[Rule],
     frozen_at: datetime,
 ) -> ShotResult | None:
-    """Arms A, C and (with a rule) B for the matched rows that can still be frozen before kickoff."""
+    """Arms A, C and one arm B pick set per rule for the matched rows that can still be frozen before kickoff."""
     included: list[tuple[ShotRow, Candidate]] = []
     dropped: list[Dropped] = []
     for row in rows:
@@ -230,36 +155,12 @@ def build_shot_ticket(
         if row.odds is not None:
             market[c.fixture_id] = (_model_probs(c)[_index(a_pick[c.fixture_id])], devig(row.odds)[_index(a_pick[c.fixture_id])])
 
-    note: str | None = None
-    if rule is not None:
-        scope = [(row, c) for row, c in included if _in_scope(rule, row.competition_name)]
-        chosen: dict[str, tuple[str, str, float | None]] = {}  # fixture id -> (pick, adjustment, score)
-        if rule.force_draws:
-            ranked = sorted(scope, key=lambda rc: (-scores[rc[1].fixture_id], rc[1].fixture_id))
-            for _, c in ranked[: rule.force_draws]:
-                chosen[c.fixture_id] = ("DRAW", "FORCED_DRAW", scores[c.fixture_id])
-        if rule.reverse_count:
-            pool = [(row, c) for row, c in scope if c.fixture_id not in chosen and a_pick[c.fixture_id] != "DRAW"]
-            if rule.reverse_basis == "odds_disagreement":
-                gap = {c.fixture_id: abs(market[c.fixture_id][0] - market[c.fixture_id][1]) for _, c in pool if c.fixture_id in market}
-                ranked_r = sorted((rc for rc in pool if rc[1].fixture_id in gap), key=lambda rc: (-gap[rc[1].fixture_id], rc[1].fixture_id))
-                values = gap
-            else:
-                values = {c.fixture_id: _margin(c) for _, c in pool}
-                ranked_r = sorted(pool, key=lambda rc: (values[rc[1].fixture_id], rc[1].fixture_id))
-            for _, c in ranked_r[: rule.reverse_count]:
-                flipped = "AWAY_WIN" if a_pick[c.fixture_id] == "HOME_WIN" else "HOME_WIN"
-                chosen[c.fixture_id] = (flipped, "REVERSED", values[c.fixture_id])
-        for _, c in scope:
-            pick, adjustment, score = chosen.get(c.fixture_id, (a_pick[c.fixture_id], None, None))
-            picks.append(
-                ArmPick(c.fixture_id, "B", f"rule-v{rule.version}", pick, False, score, None, c.kickoff_at, adjustment)
-            )
-        wanted = (rule.force_draws or 0) + (rule.reverse_count or 0)
-        done = len(chosen)
-        note = f"rule v{rule.version}: {done} of {wanted} requested adjustments applied on {len(scope)} fixture(s) in scope"
-        if not scope:
-            note = f"rule v{rule.version}: no fixture is in the rule's leagues, so arm B has no picks"
+    notes: list[str] = []
+    items = [(c, row.competition_name) for row, c in included]
+    for rule in rules:
+        rule_pick_list, note = rule_picks(rule, items, a_pick, scores, market)
+        picks.extend(rule_pick_list)
+        notes.append(note)
 
     ordered = [row for row, _ in included]
     ticket = Ticket(
@@ -274,15 +175,26 @@ def build_shot_ticket(
         ticket_kind=SHOT_KIND,
         intake_id=intake_id,
     )
-    return ShotResult(ticket=ticket, rows=tuple(ordered), dropped=tuple(dropped), market=market, arm_b_note=note)
+    return ShotResult(
+        ticket=ticket, rows=tuple(ordered), dropped=tuple(dropped), market=market, rule_notes=tuple(notes)
+    )
+
+
+def arm_label(pick: ArmPick) -> str:
+    """A, C, or B followed by the rule version (arm B of rule v3 is "B3")."""
+    return f"B{pick.arm_version.removeprefix('rule-v')}" if pick.arm == "B" else pick.arm
+
+
+def _arm_order(label: str) -> tuple[str, int]:
+    return (label[0], int(label[1:]) if label[1:].isdigit() else 0)
 
 
 def format_reply(result: ShotResult) -> str:
     """Plain text for Telegram: the frozen picks and a model-vs-market line. No stakes or profit claims."""
     picks: dict[str, dict[str, ArmPick]] = {}
     for p in result.ticket.picks:
-        picks.setdefault(p.fixture_id, {})[p.arm] = p
-    arms = sorted({p.arm for p in result.ticket.picks})
+        picks.setdefault(p.fixture_id, {})[arm_label(p)] = p
+    arms = sorted({arm_label(p) for p in result.ticket.picks}, key=_arm_order)
     lines = [f"Frozen before kickoff: {len(result.ticket.fixtures)} fixture(s), arms {', '.join(arms)}."]
     for fixture_id, row in zip(result.ticket.fixtures, result.rows):
         cells = []
@@ -297,9 +209,10 @@ def format_reply(result: ShotResult) -> str:
             model_p, market_p = result.market[fixture_id]
             line += f" [A pick: model {model_p * 100:.0f}% vs market {market_p * 100:.0f}%]"
         lines.append(line)
-    if result.arm_b_note:
-        lines.append(result.arm_b_note)
-    elif "B" not in arms:
+    if result.rule_notes:
+        lines.append("Arm B is one pick set per active rule (B3 is rule v3):")
+        lines.extend(f"- {note}" for note in result.rule_notes)
+    else:
         lines.append("No rule is active, so there is no arm B on this ticket.")
     # Rows that never matched a stored fixture were already listed by the first message (the read and
     # match step), so only their number is repeated here; rows that matched but could not be frozen are
@@ -323,7 +236,7 @@ class ShotStore:
     def intake_ticket(self, intake_id: str) -> Mapping[str, Any] | None: ...
     def intake_rows(self, intake_id: str) -> list[Mapping[str, Any]]: ...
     def screenshot_ticket_exists(self, intake_id: str) -> bool: ...
-    def active_rule(self) -> Mapping[str, Any] | None: ...
+    def active_rules(self) -> list[Mapping[str, Any]]: ...
     def earliest_predictions(self, fixture_ids: Sequence[str], model_name: str) -> dict[str, Candidate]: ...
     def draw_counts(self) -> DrawCounts: ...
     def append_ticket(self, ticket: Ticket) -> None: ...
@@ -346,15 +259,14 @@ def run_ticket_mode(
     rows = parse_rows(store.intake_rows(intake_id))
     matched_ids = [r.fixture_id for r in rows if r.fixture_id]
     candidates = store.earliest_predictions(matched_ids, RATING_MODEL_NAME) if matched_ids else {}
-    record = store.active_rule()
-    rule = parse_rule(record) if record is not None else None
+    rules = parse_active_rules(store.active_rules())
     result = build_shot_ticket(
         intake_id=intake_id,
         ticket_date=now.date(),
         rows=rows,
         candidates=candidates,
         counts=store.draw_counts(),
-        rule=rule,
+        rules=rules,
         frozen_at=now,
     )
     if result is None:

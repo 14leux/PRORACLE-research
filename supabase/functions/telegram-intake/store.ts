@@ -12,6 +12,8 @@ export type AuditAction =
   | "RULE_PROPOSED"
   | "RULE_ACTIVATED"
   | "RULE_DECLINED"
+  | "RULE_RETIRE_REQUESTED"
+  | "RULE_RETIRED"
   | "VIEW"
   | "HELP"
   | "REJECTED_CHAT"
@@ -43,6 +45,8 @@ export interface TicketPick {
   home: string;
   away: string;
   arm: string;
+  /** "rule-v<N>" for arm B, otherwise the model or arm name. */
+  armVersion: string;
   pick: string;
   adjustment: string | null;
   forced: boolean;
@@ -54,12 +58,21 @@ export interface TicketSummary {
   picks: TicketPick[];
 }
 
+/** One arm (arm B once per rule version) on settled picks of complete tickets, from intake_scoreboard. */
 export interface ScoreRow {
   ticket_kind: string;
   arm: string;
+  arm_version: string;
   tickets: number;
   picks_settled: number;
   picks_right: number;
+  /** What arm A and arm C picked on exactly the same fixtures. */
+  a_right_same_fixtures: number;
+  c_right_same_fixtures: number;
+  /** Picks where the arm differs from arm A by design (a forced draw or a reversal). */
+  adjusted_settled: number;
+  adjusted_right: number;
+  a_right_on_adjusted: number;
 }
 
 export interface IntakeStore {
@@ -72,11 +85,18 @@ export interface IntakeStore {
   matchedHistory(): Promise<MatchedHistoryRow[]>;
   saveIntake(ticket: IntakeInsert, rows: readonly MatchedRow[]): Promise<string>;
   audit(action: AuditAction, outcome: AuditOutcome, detail: string | null, updateId: number | null): Promise<void>;
-  activeRule(): Promise<RuleRecord | null>;
+  /** Every rule in force (up to five arm B pick sets), oldest version first. */
+  activeRules(): Promise<RuleRecord[]>;
   pendingRule(): Promise<RuleRecord | null>;
+  /** The active rule whose retirement waits for YES or NO, if any. */
+  pendingRetirement(): Promise<RuleRecord | null>;
   proposeRule(structure: RuleV1, sourceText: string, updateId: number): Promise<RuleRecord>;
-  activateRule(rule: RuleRecord, previous: RuleRecord | null, updateId: number): Promise<void>;
+  /** Adds the rule to the active set; no other rule is touched. */
+  activateRule(rule: RuleRecord, updateId: number): Promise<void>;
   declineRule(rule: RuleRecord, updateId: number): Promise<void>;
+  requestRetirement(rule: RuleRecord, updateId: number): Promise<void>;
+  confirmRetirement(rule: RuleRecord, updateId: number): Promise<void>;
+  declineRetirement(rule: RuleRecord, updateId: number): Promise<void>;
   ticketsForDate(date: string): Promise<TicketSummary[]>;
   scoreboard(): Promise<ScoreRow[]>;
 }
@@ -222,12 +242,26 @@ export class PostgrestStore implements IntakeStore {
     return Array.isArray(rows) && rows.length > 0 ? (rows[0] as RuleRecord) : null;
   }
 
-  activeRule(): Promise<RuleRecord | null> {
-    return this.oneRule("intake_active_rule");
+  async activeRules(): Promise<RuleRecord[]> {
+    const rows = await this.rest("GET", "intake_active_rules", {
+      query: [["select", "rule_id,version,structure,source_text"], ["order", "version.asc"], ["limit", "20"]],
+    });
+    return Array.isArray(rows) ? (rows as RuleRecord[]) : [];
   }
 
   pendingRule(): Promise<RuleRecord | null> {
     return this.oneRule("intake_pending_rule");
+  }
+
+  pendingRetirement(): Promise<RuleRecord | null> {
+    return this.oneRule("intake_pending_retirement");
+  }
+
+  private async ruleEvent(rule: RuleRecord, event: string, updateId: number): Promise<void> {
+    await this.rest("POST", "intake_rule_events", {
+      body: { rule_id: rule.rule_id, event, update_id: updateId },
+      prefer: "return=minimal",
+    });
   }
 
   async proposeRule(structure: RuleV1, sourceText: string, updateId: number): Promise<RuleRecord> {
@@ -248,24 +282,24 @@ export class PostgrestStore implements IntakeStore {
     return { rule_id: row.id, version: last + 1, structure, source_text: sourceText };
   }
 
-  async activateRule(rule: RuleRecord, previous: RuleRecord | null, updateId: number): Promise<void> {
-    await this.rest("POST", "intake_rule_events", {
-      body: { rule_id: rule.rule_id, event: "ACTIVATED", update_id: updateId },
-      prefer: "return=minimal",
-    });
-    if (previous && previous.rule_id !== rule.rule_id) {
-      await this.rest("POST", "intake_rule_events", {
-        body: { rule_id: previous.rule_id, event: "RETIRED", update_id: updateId },
-        prefer: "return=minimal",
-      });
-    }
+  activateRule(rule: RuleRecord, updateId: number): Promise<void> {
+    return this.ruleEvent(rule, "ACTIVATED", updateId);
   }
 
-  async declineRule(rule: RuleRecord, updateId: number): Promise<void> {
-    await this.rest("POST", "intake_rule_events", {
-      body: { rule_id: rule.rule_id, event: "DECLINED", update_id: updateId },
-      prefer: "return=minimal",
-    });
+  declineRule(rule: RuleRecord, updateId: number): Promise<void> {
+    return this.ruleEvent(rule, "DECLINED", updateId);
+  }
+
+  requestRetirement(rule: RuleRecord, updateId: number): Promise<void> {
+    return this.ruleEvent(rule, "RETIRE_REQUESTED", updateId);
+  }
+
+  confirmRetirement(rule: RuleRecord, updateId: number): Promise<void> {
+    return this.ruleEvent(rule, "RETIRED", updateId);
+  }
+
+  declineRetirement(rule: RuleRecord, updateId: number): Promise<void> {
+    return this.ruleEvent(rule, "RETIRE_DECLINED", updateId);
   }
 
   async ticketsForDate(date: string): Promise<TicketSummary[]> {
@@ -276,12 +310,13 @@ export class PostgrestStore implements IntakeStore {
     const list = tickets as { id: string; ticket_kind: string; fixture_count: number }[];
     const ids = list.map((t) => t.id).join(",");
     const picks = await this.rest("GET", "ticket_arm_picks", {
-      query: [["select", "ticket_id,fixture_id,arm,pick,adjustment,forced"], ["ticket_id", `in.(${ids})`], ["order", "created_at.asc"]],
+      query: [["select", "ticket_id,fixture_id,arm,arm_version,pick,adjustment,forced"], ["ticket_id", `in.(${ids})`], ["order", "created_at.asc"]],
     });
     const pickRows = (Array.isArray(picks) ? picks : []) as {
       ticket_id: string;
       fixture_id: string;
       arm: string;
+      arm_version: string;
       pick: string;
       adjustment: string | null;
       forced: boolean;
@@ -305,6 +340,7 @@ export class PostgrestStore implements IntakeStore {
           home: names.get(p.fixture_id)?.home ?? "?",
           away: names.get(p.fixture_id)?.away ?? "?",
           arm: p.arm,
+          armVersion: p.arm_version,
           pick: p.pick,
           adjustment: p.adjustment,
           forced: p.forced,
@@ -313,7 +349,7 @@ export class PostgrestStore implements IntakeStore {
   }
 
   async scoreboard(): Promise<ScoreRow[]> {
-    const rows = await this.rest("GET", "intake_arm_scoreboard", { query: [["select", "*"]] });
+    const rows = await this.rest("GET", "intake_scoreboard", { query: [["select", "*"]] });
     return Array.isArray(rows) ? (rows as ScoreRow[]) : [];
   }
 }

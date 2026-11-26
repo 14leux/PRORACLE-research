@@ -3,10 +3,19 @@
 // the tests run with fakes and no network.
 
 import { ALLOWED_MEDIA, buildVisionRequest, parseVisionOutput, type ParsedRow, type ParsedTicket, VisionError } from "./vision.ts";
-import { COMMANDS, helpText, MAX_FILE_BYTES, MAX_FIXTURES, MAX_RULE_TEXT_CHARS, MENU, PENDING_RULE_MINUTES } from "./commands.ts";
+import {
+  COMMANDS,
+  helpText,
+  MAX_ACTIVE_RULES,
+  MAX_FILE_BYTES,
+  MAX_FIXTURES,
+  MAX_RULE_TEXT_CHARS,
+  MENU,
+  PENDING_RULE_MINUTES,
+} from "./commands.ts";
 import { buildAliases, MATCH_WINDOW_MS, matchRows, type MatchedRow } from "./matching.ts";
-import { describeRule, parseRule } from "./rules.ts";
-import type { AuditAction, AuditOutcome, IntakeStore, UpdateKind } from "./store.ts";
+import { canonicalRule, describeRule, parseRule } from "./rules.ts";
+import type { AuditAction, AuditOutcome, IntakeStore, RuleRecord, ScoreRow, UpdateKind } from "./store.ts";
 import { TelegramError, type TelegramApi } from "./telegram.ts";
 
 export interface Deps {
@@ -77,6 +86,23 @@ function pct(n: number, d: number): string {
   return d === 0 ? "n/a" : `${((100 * n) / d).toFixed(1)}%`;
 }
 
+/** "B3" for arm B of rule v3; arms A and C keep their letter. */
+export const armLabel = (arm: string, version: string): string =>
+  arm === "B" ? `B${version.replace(/^rule-v/, "")}` : arm;
+
+/** A, then B2, B10 ... in version order (numerically), then C. */
+export function compareArms(a: string, b: string): number {
+  const x = a[0], y = b[0];
+  if (x !== y) return x < y ? -1 : 1;
+  return (Number(a.slice(1)) || 0) - (Number(b.slice(1)) || 0);
+}
+
+const versionsOf = (rules: readonly RuleRecord[]): string => rules.map((r) => `v${r.version}`).join(", ");
+
+// A rough 95% margin of error for one hit rate (1.96 * sqrt(p(1-p)/n) with p = 0.5, in points).
+const margin = (n: number): string => `±${Math.round(98 / Math.sqrt(n))} pts`;
+const MIN_SETTLED_NOTE = 20;
+
 type Route = (ctx: Ctx) => Promise<void>;
 interface Ctx {
   deps: Deps;
@@ -105,50 +131,133 @@ const proposeRule: Route = async (c) => {
     await c.audit("RULE_PROPOSED", "REFUSED", "not understood");
     return c.reply(parsed.error);
   }
+  const [active, retiring] = await Promise.all([c.deps.store.activeRules(), c.deps.store.pendingRetirement()]);
+  if (retiring) {
+    await c.audit("RULE_PROPOSED", "REFUSED", "retirement pending");
+    return c.reply(`Answer YES or NO to the retirement of rule v${retiring.version} first.`);
+  }
+  const same = active.find((r) => canonicalRule(r.structure) === canonicalRule(parsed.rule));
+  if (same) {
+    await c.audit("RULE_PROPOSED", "REFUSED", `same as v${same.version}`);
+    return c.reply(`That is the same as active rule v${same.version} (arm B${same.version}), so it would only repeat that arm.`);
+  }
+  if (active.length >= MAX_ACTIVE_RULES) {
+    await c.audit("RULE_PROPOSED", "REFUSED", "all slots in use");
+    return c.reply(
+      `${MAX_ACTIVE_RULES} rules are already active (${versionsOf(active)}). Stop one first with /retire <version>, then propose this again.`,
+    );
+  }
   const rule = await c.deps.store.proposeRule(parsed.rule, raw.trim().slice(0, MAX_RULE_TEXT_CHARS), c.updateId);
   await c.audit("RULE_PROPOSED", "OK", `v${rule.version}`);
   await c.reply(
-    `Proposed rule v${rule.version} for arm B:\n${describeRule(rule.structure)}\n\n` +
-      `Nothing changes until you reply YES (it waits ${PENDING_RULE_MINUTES} minutes). Reply NO to cancel.`,
+    `Proposed rule v${rule.version} as arm B${rule.version}:\n${describeRule(rule.structure)}\n\n` +
+      `Nothing changes until you reply YES (it waits ${PENDING_RULE_MINUTES} minutes). Reply NO to cancel. ` +
+      `${active.length} of ${MAX_ACTIVE_RULES} rule slots are in use.`,
   );
 };
 
 const yes: Route = async (c) => {
-  const pending = await c.deps.store.pendingRule();
-  if (!pending) {
-    await c.audit("RULE_ACTIVATED", "REFUSED", "nothing pending");
-    return c.reply("Nothing is waiting for YES. Propose one with /rule.");
+  const store = c.deps.store;
+  const pending = await store.pendingRule();
+  if (pending) {
+    const active = await store.activeRules();
+    if (active.some((r) => canonicalRule(r.structure) === canonicalRule(pending.structure))) {
+      await c.audit("RULE_ACTIVATED", "REFUSED", "repeats an active rule");
+      return c.reply("That rule repeats one that is already active, so I did not start it. Reply NO to drop it.");
+    }
+    if (active.length >= MAX_ACTIVE_RULES) {
+      await c.audit("RULE_ACTIVATED", "REFUSED", "all slots in use");
+      return c.reply(`${MAX_ACTIVE_RULES} rules are already active (${versionsOf(active)}). Stop one with /retire <version> first.`);
+    }
+    await store.activateRule(pending, c.updateId);
+    await c.audit("RULE_ACTIVATED", "OK", `v${pending.version}`);
+    const all = [...active, pending];
+    await c.reply(
+      `Rule v${pending.version} is now active as arm B${pending.version}:\n${describeRule(pending.structure)}\n` +
+        `Active rules: ${versionsOf(all)} (${all.length} of ${MAX_ACTIVE_RULES}). It applies to tickets frozen from now on` +
+        (pending.structure.reverse?.basis === "odds_disagreement"
+          ? ", but only to tickets from a screenshot with odds: the daily simulated ticket has none."
+          : "."),
+    );
+    return;
   }
-  const previous = await c.deps.store.activeRule();
-  await c.deps.store.activateRule(pending, previous, c.updateId);
-  await c.audit("RULE_ACTIVATED", "OK", `v${pending.version}`);
-  await c.reply(
-    `Rule v${pending.version} is now active for arm B:\n${describeRule(pending.structure)}` +
-      (previous ? `\n(v${previous.version} is retired.)` : "") +
-      "\nIt applies to tickets frozen from now on.",
-  );
+  const retiring = await store.pendingRetirement();
+  if (retiring) {
+    const active = await store.activeRules();
+    await store.confirmRetirement(retiring, c.updateId);
+    await c.audit("RULE_RETIRED", "OK", `v${retiring.version}`);
+    const left = active.filter((r) => r.rule_id !== retiring.rule_id);
+    await c.reply(
+      `Rule v${retiring.version} is retired (arm B${retiring.version}). Its earlier picks stay and are still scored. ` +
+        (left.length ? `Active rules: ${versionsOf(left)}.` : "No rule is active now, so tickets get arms A and C only."),
+    );
+    return;
+  }
+  await c.audit("RULE_ACTIVATED", "REFUSED", "nothing pending");
+  await c.reply("Nothing is waiting for YES. Propose a rule with /rule or ask to stop one with /retire.");
 };
 
 const no: Route = async (c) => {
-  const pending = await c.deps.store.pendingRule();
-  if (!pending) {
-    await c.audit("RULE_DECLINED", "REFUSED", "nothing pending");
-    return c.reply("Nothing is waiting for a decision.");
+  const store = c.deps.store;
+  const pending = await store.pendingRule();
+  if (pending) {
+    await store.declineRule(pending, c.updateId);
+    await c.audit("RULE_DECLINED", "OK", `v${pending.version}`);
+    return c.reply(`Cancelled rule v${pending.version}. The active rules are unchanged.`);
   }
-  await c.deps.store.declineRule(pending, c.updateId);
-  await c.audit("RULE_DECLINED", "OK", `v${pending.version}`);
-  await c.reply(`Cancelled rule v${pending.version}. The active rule is unchanged.`);
+  const retiring = await store.pendingRetirement();
+  if (retiring) {
+    await store.declineRetirement(retiring, c.updateId);
+    await c.audit("RULE_DECLINED", "OK", `keep v${retiring.version}`);
+    return c.reply(`Kept rule v${retiring.version} (arm B${retiring.version}). Nothing changed.`);
+  }
+  await c.audit("RULE_DECLINED", "REFUSED", "nothing pending");
+  await c.reply("Nothing is waiting for a decision.");
+};
+
+const retire: Route = async (c) => {
+  const store = c.deps.store;
+  const [active, pending, retiring] = await Promise.all([store.activeRules(), store.pendingRule(), store.pendingRetirement()]);
+  const list = active.length ? `Active rules: ${versionsOf(active)}.` : "No rule is active.";
+  const m = (c.message.text ?? "").trim().match(/^\/retire(?:@\w+)?\s+v?(\d{1,6})$/i);
+  if (!m) {
+    await c.audit("RULE_RETIRE_REQUESTED", "REFUSED", "not understood");
+    return c.reply(`Say which rule to stop, for example: /retire ${active[0]?.version ?? 3}. ${list}`);
+  }
+  const version = Number(m[1]);
+  const rule = active.find((r) => r.version === version);
+  if (!rule) {
+    await c.audit("RULE_RETIRE_REQUESTED", "REFUSED", `v${version} not active`);
+    return c.reply(`Rule v${version} is not active. ${list}`);
+  }
+  if (pending || retiring) {
+    await c.audit("RULE_RETIRE_REQUESTED", "REFUSED", "something is waiting for YES");
+    return c.reply("Answer YES or NO to what is already waiting first, then ask again.");
+  }
+  await store.requestRetirement(rule, c.updateId);
+  await c.audit("RULE_RETIRE_REQUESTED", "OK", `v${version}`);
+  await c.reply(
+    `Stop rule v${version} (arm B${version}): ${describeRule(rule.structure)}?\n` +
+      "It would no longer be used on tickets frozen from now on; its earlier picks stay and are still scored. " +
+      `Reply YES to stop it (it waits ${PENDING_RULE_MINUTES} minutes) or NO to keep it.`,
+  );
 };
 
 const rules: Route = async (c) => {
-  const [active, pending] = await Promise.all([c.deps.store.activeRule(), c.deps.store.pendingRule()]);
+  const [active, pending, retiring] = await Promise.all([
+    c.deps.store.activeRules(),
+    c.deps.store.pendingRule(),
+    c.deps.store.pendingRetirement(),
+  ]);
   await c.audit("VIEW", "OK", "rules");
-  const lines = [
-    active
-      ? `Active rule v${active.version} (arm B): ${describeRule(active.structure)}`
-      : "No rule is active, so tickets get arms A and C only.",
-  ];
+  const lines = active.length
+    ? [
+      `Active rules (${active.length} of ${MAX_ACTIVE_RULES}; each is its own arm B on the same fixtures as A and C):`,
+      ...active.map((r) => `- B${r.version} (rule v${r.version}): ${describeRule(r.structure)}`),
+    ]
+    : ["No rule is active, so tickets get arms A and C only."];
   if (pending) lines.push(`Waiting for YES or NO: rule v${pending.version}: ${describeRule(pending.structure)}`);
+  if (retiring) lines.push(`Waiting for YES or NO: stop rule v${retiring.version}`);
   await c.reply(lines.join("\n"));
 };
 
@@ -160,30 +269,59 @@ const ticket: Route = async (c) => {
   const out: string[] = [];
   for (const t of tickets) {
     out.push(`${t.kind === "SIMULATED" ? "Simulated" : "Screenshot"} ticket, ${t.fixtureCount} fixtures:`);
-    const byFixture = new Map<string, string[]>();
+    const byFixture = new Map<string, { arm: string; text: string }[]>();
     for (const p of t.picks) {
       const key = `${p.home} v ${p.away}`;
       const mark = p.forced || p.adjustment === "FORCED_DRAW" ? " (forced)" : p.adjustment === "REVERSED" ? " (reversed)" : "";
-      byFixture.set(key, [...(byFixture.get(key) ?? []), `${p.arm} ${label(p.pick)}${mark}`]);
+      const arm = armLabel(p.arm, p.armVersion);
+      byFixture.set(key, [...(byFixture.get(key) ?? []), { arm, text: `${arm} ${label(p.pick)}${mark}` }]);
     }
-    // Each cell starts with its arm letter, so a plain sort puts A, B, C in order.
-    for (const [fixture, picks] of byFixture) out.push(`- ${fixture}: ${[...picks].sort().join(" | ")}`);
+    for (const [fixture, picks] of byFixture) {
+      out.push(`- ${fixture}: ${[...picks].sort((a, b) => compareArms(a.arm, b.arm)).map((x) => x.text).join(" | ")}`);
+    }
   }
   await c.reply(out.join("\n"));
 };
+
+function scoreLines(kind: string, rows: readonly ScoreRow[]): string[] {
+  const lines = [`${kind === "SIMULATED" ? "Simulated" : "Screenshot"} tickets:`];
+  const ordered = [...rows].sort((a, b) => compareArms(armLabel(a.arm, a.arm_version), armLabel(b.arm, b.arm_version)));
+  for (const r of ordered) {
+    const name = r.arm === "A" ? "A (rating model)" : r.arm === "C" ? "C (draw-score-v1)" : `${armLabel(r.arm, r.arm_version)} (rule v${r.arm_version.replace(/^rule-v/, "")})`;
+    lines.push(
+      `- ${name}: ${r.picks_right} of ${r.picks_settled} right (${pct(r.picks_right, r.picks_settled)}, ${margin(r.picks_settled)}) over ${r.tickets} ticket(s)`,
+    );
+    if (r.arm !== "A") {
+      lines.push(`  Same fixtures: A ${r.a_right_same_fixtures} right${r.arm === "B" ? `, C ${r.c_right_same_fixtures} right` : ""}`);
+    }
+    if (r.adjusted_settled > 0) {
+      lines.push(
+        `  Where it differs from A by design: ${r.adjusted_settled} settled, it was right ${r.adjusted_right} times and A ${r.a_right_on_adjusted}`,
+      );
+    } else if (r.arm !== "A") {
+      lines.push("  It has not differed from A on a settled pick yet");
+    }
+    if (r.picks_settled < MIN_SETTLED_NOTE) lines.push(`  Only ${r.picks_settled} settled picks: too few to read much into`);
+  }
+  return lines;
+}
 
 const scoreboard: Route = async (c) => {
   const rows = await c.deps.store.scoreboard();
   await c.audit("VIEW", "OK", "scoreboard");
   if (rows.length === 0) return c.reply("No settled ticket picks yet.");
-  const lines = ["Arm hit rates on settled picks of complete tickets (a calibration report card, not evidence of an edge):"];
-  for (const r of rows) {
-    lines.push(
-      `- ${r.ticket_kind === "SIMULATED" ? "Simulated" : "Screenshot"} tickets, arm ${r.arm}: ` +
-        `${r.picks_right} of ${r.picks_settled} right (${pct(r.picks_right, r.picks_settled)}) over ${r.tickets} ticket(s)`,
-    );
+  const kinds = [...new Set(rows.map((r) => r.ticket_kind))].sort();
+  // One message per ticket kind, so five rules never push a message past Telegram's length limit.
+  for (const [i, kind] of kinds.entries()) {
+    const lines = i === 0
+      ? [
+        "Hit rates on settled picks of complete tickets (a calibration report card, not evidence of an edge). " +
+        "The ± is a rough 95% margin for one hit rate: a gap smaller than it is most likely noise.",
+        "",
+      ]
+      : [];
+    await c.reply([...lines, ...scoreLines(kind, rows.filter((r) => r.ticket_kind === kind))].join("\n"));
   }
-  await c.reply(lines.join("\n"));
 };
 
 function fileOf(message: TgMessage): { fileId: string; mime: string; size: number | null } | "UNSUPPORTED" | null {
@@ -302,12 +440,14 @@ const ticketFile: Route = async (c) => {
     lines.push("Nothing to compute: no row matched a stored fixture.");
     return c.reply(lines.join("\n"));
   }
-  const rule = await deps.store.activeRule();
+  const active = await deps.store.activeRules();
   const started = await deps.dispatch(intakeId);
   await c.audit("DISPATCH", started ? "OK" : "ERROR");
   lines.push(
     started
-      ? `Computing arms A, C${rule ? ` and B (rule v${rule.version})` : ""} now; the frozen picks follow in this chat.`
+      ? `Computing arms A, C${
+        active.length ? ` and ${active.map((r) => `B${r.version}`).join(", ")} (one per active rule)` : ""
+      } now; the frozen picks follow in this chat.`
       : "I saved the read but could not start the computation. Nothing was frozen.",
   );
   await c.reply(lines.join("\n"));
@@ -329,6 +469,7 @@ function reasonText(reason: MatchedRow["reason"]): string {
 export const ROUTES: Record<string, Route> = {
   ticket_file: ticketFile,
   rule: proposeRule,
+  retire,
   yes,
   no,
   rules,

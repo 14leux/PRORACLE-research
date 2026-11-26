@@ -21,23 +21,24 @@ Everything below comes from one list in `supabase/functions/telegram-intake/comm
 
 | Command | What it does |
 |---|---|
-| `send a photo, an image file (PNG, JPEG, WebP) or a PDF of fixtures` | Reads up to 20 fixtures, matches them, freezes arms A, B and C before kickoff and replies. |
-| `/rule <directives separated by ;>` | Proposes a rule set for arm B. It is echoed back and used only after YES. |
-| `YES` | Activates the rule last proposed (it waits 60 minutes). |
-| `NO` | Cancels the rule last proposed. |
-| `/rules` | Shows the active rule set and any proposal waiting. |
+| `send a photo, an image file (PNG, JPEG, WebP) or a PDF of fixtures` | Reads up to 20 fixtures, matches them, freezes arm A, arm C and one arm B per active rule before kickoff and replies. |
+| `/rule <directives separated by ;>` | Proposes a rule for arm B. It is echoed back and used only after YES. Up to 5 rules run at once, each as its own arm (rule v3 is arm B3). |
+| `/retire <version>` | Asks to stop one active rule. It stops only after YES (it waits 60 minutes); its earlier picks stay and are still scored. |
+| `YES` | Confirms what was last asked about: activates the proposed rule, or retires the rule asked about (it waits 60 minutes). |
+| `NO` | Cancels the proposed rule, or the retirement asked about. |
+| `/rules` | Shows every active rule and any proposal or retirement waiting. |
 | `/ticket` | Shows today's tickets and each arm's picks. |
-| `/scoreboard` | Hit rate of each arm on settled ticket picks, labelled a calibration report card. |
+| `/scoreboard` | Hit rate of each arm and each rule on settled ticket picks, with what arms A and C picked on the same fixtures and a rough margin of error, labelled a calibration report card. |
 | `/help` | Shows the list, the limits and what the bot cannot do. |
 
-**Limits:** at most 20 fixtures per ticket; at most 10 vision reads per UTC day (`INTAKE_DAILY_CALL_CAP`); files up to 10 MB; rows that cannot be matched are reported and not used.
+**Limits:** at most 20 fixtures per ticket; at most 10 vision reads per UTC day (`INTAKE_DAILY_CALL_CAP`); files up to 10 MB; rows that cannot be matched are reported and not used; at most 5 rules active at once.
 
 **What it cannot do:**
 
 - Change the model or arm A.
 - Put odds into arm A or arm C (odds are used only by arm B and the market comparison).
 - Give stake, bankroll or profit advice.
-- Apply a rule change without a YES from you.
+- Apply a rule change without a YES from you (starting or stopping a rule).
 - Act for any other chat.
 
 ## Rules for arm B
@@ -50,14 +51,25 @@ A rule message is turned into a fixed structure by a small deterministic grammar
 
 Example: `/rule 5 draws; 4 upsets by margin; only Premier League, La Liga`.
 
-Each proposal and decision is an append-only event with an audit row. At most one rule set is active; activating a new one retires the previous one. A ticket uses the rule that is active when it is frozen.
+Each proposal and decision is an append-only event with an audit row.
 
-## The arms on a screenshot ticket
+### Several rules at once
+
+Up to five rules are active at the same time. Each one is its own arm B pick set (`arm = B`, `arm_version = rule-v<N>`, shown as B<N>: rule v3 is arm B3), computed on exactly the same fixtures as arm A and arm C, so they can be compared like for like. Activating a rule never retires another. A rule that repeats an active one (same effect, leagues in any order or case) is refused, because it would only add a duplicate arm. When five are active, a sixth proposal is refused until you stop one with `/retire <version>` and confirm with YES. A retired rule keeps all its earlier picks, which stay in the scoreboard; starting the same rule again gives it a new version, and its sample starts again from zero.
+
+A ticket uses the rules that are active when it is frozen. Both ticket kinds carry them:
+
+- A **screenshot ticket** gets every active rule.
+- The **daily simulated ticket** also gets every active rule except one that uses odds (`N upsets by odds`): a simulated ticket has no odds, so that rule only ever appears on screenshot tickets that show odds. The simulated ticket is written once a day and never amended, so a rule activated later in the day first appears on the next day's ticket. If the rules cannot be read when the daily ticket is due, it waits for the next run rather than being written without the rule arms.
+
+Why this matters for reading results: a rule's pick equals arm A's except where a directive adjusted it, so the only place a rule can beat or lose to arm A is on its adjusted picks. `/scoreboard` therefore shows, for every arm and rule, its hit rate with a rough 95% margin, what arms A and C picked on the same fixtures, and (for a rule or arm C) how it did on the picks where it differs from A by design. A few dozen settled picks cannot separate rules that differ by a few points; the margin and the sample sizes are shown so that it is not mistaken for evidence. It is a calibration report card, not evidence of an edge.
+
+## The arms on a ticket
 
 | Arm | Pick |
 |---|---|
 | A | The rating model's most probable outcome (the earliest pre-kickoff prediction). Never uses odds. |
-| B | Arm A adjusted by the active rule set; absent when no rule is active. The only arm that can use odds. |
+| B (one per active rule) | Arm A adjusted by that rule; absent when no rule is active. The only arm that can use odds. |
 | C | `draw-score-v1`: the five highest draw scores forced to a draw (fewer on a short ticket), otherwise arm A. Never uses odds. |
 
 Fixtures that already kicked off, have no rating prediction or were not matched are left off the ticket and listed in the reply. Details of the stored tables are in [TICKETS.md](TICKETS.md).
@@ -73,7 +85,7 @@ Fixtures that already kicked off, have no rating prediction or were not matched 
 
 You need your own Telegram bot, Anthropic key and Supabase project. Nothing here is shared with the maintainer.
 
-1. **Apply the migrations** (`supabase/migrations/`, in order, including `20261126000000_proracle_p0_capture.sql` and `20261127000000_proracle_intake.sql`) to your project. Review them first; they only add `proracle` tables, views and one function. Add `proracle` to the exposed schemas.
+1. **Apply the migrations** (`supabase/migrations/`, in order, including `20261126000000_proracle_p0_capture.sql`, `20261127000000_proracle_intake.sql` and `20261128000000_proracle_multi_rule.sql`) to your project. Review them first; they only add `proracle` tables, views and one function. Add `proracle` to the exposed schemas.
 2. **Telegram.** Create a bot with `@BotFather`. Send it one message from your account and read your chat id with `getUpdates` **before** you register a webhook ([OPERATIONS.md](OPERATIONS.md)). Choose a long random webhook secret.
 3. **Anthropic.** Create a key in its own workspace with a spend limit (limits apply per workspace, not per key). Use a dedicated key for this function only.
 4. **GitHub token.** Create a fine-grained token for **this one repository** with the single permission *Actions: read and write* and a short expiry. It can start the `Ticket intake` workflow and nothing else. In a fork, also set `GITHUB_REPOSITORY`.
@@ -106,4 +118,4 @@ deno check --no-remote supabase/functions/telegram-intake/*.ts
 deno test --no-prompt --no-remote supabase/functions/telegram-intake/
 ```
 
-The Python side is covered by `tests/test_ticket_mode.py`. To prove the migration on a disposable local database, follow [DATABASE.md](DATABASE.md) and run `supabase/tests/verify_intake.sql` with `psql` inside the local database container; `supabase/tests/intake_catalog_fingerprint.sql` run before and after re-applying the migration must give identical output.
+The Python side is covered by `tests/test_ticket_mode.py`. To prove the migration on a disposable local database, follow [DATABASE.md](DATABASE.md) and run `supabase/tests/verify_intake.sql` and `supabase/tests/verify_multi_rule.sql` with `psql` inside the local database container; `supabase/tests/intake_catalog_fingerprint.sql` run before and after re-applying the migration must give identical output.
