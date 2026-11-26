@@ -308,7 +308,7 @@ Deno.test("PDFs and image files are accepted; other files are refused without us
   const body = pdf.visionCalls[0] as { messages: { content: { type: string; source?: { media_type: string } }[] }[]; tool_choice: unknown };
   assert.equal(body.messages[0].content[0].type, "document");
   assert.equal(body.messages[0].content[0].source?.media_type, "application/pdf");
-  assert.deepEqual(body.tool_choice, { type: "tool", name: "record_fixtures" });
+  assert.deepEqual(body.tool_choice, { type: "auto" });
   assert.equal(pdf.store.intakes[0].ticket.sourceKind, "PDF");
   assert.deepEqual(pdf.store.claimKinds, ["PDF"]);
 
