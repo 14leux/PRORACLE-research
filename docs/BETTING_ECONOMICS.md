@@ -4,7 +4,7 @@
 
 ## Why this is separate from prediction
 
-PRORACLE's prediction path never takes bookmaker prices as an input and never settles stakes. A good probability forecast does not by itself make money: returns depend on the price you can actually get, the size you can place, what you pay in fees and taxes, and how the market settles. Accuracy, probability calibration and financial return are different measures, and this track exists so the third is not smuggled in on the back of the first two. See [the baseline](BASELINE.md) for how little the project's accuracy record currently shows.
+PRORACLE's prediction path never takes bookmaker prices as an input and never settles stakes. (The optional Telegram intake stores prices from the operator's own screenshots for an experimental arm and a market comparison only; see [INTAKE.md](INTAKE.md).) A good probability forecast does not by itself make money: returns depend on the price you can actually get, the size you can place, what you pay in fees and taxes, and how the market settles. Accuracy, probability calibration and financial return are different measures, and this track exists so the third is not smuggled in on the back of the first two. See [the baseline](BASELINE.md) for how little the project's accuracy record currently shows.
 
 ## Rules for any contribution to this track
 

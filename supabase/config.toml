@@ -10,3 +10,9 @@ extra_search_path = ["public", "extensions"]
 [db]
 # Keep the local database aligned with the verified PostgreSQL 17 migration setup.
 major_version = 17
+
+# The Telegram intake function (docs/INTAKE.md). Telegram cannot send a Supabase JWT, so JWT
+# verification is off for this one function and the Telegram secret-token header, checked in constant
+# time before anything else, is its authentication.
+[functions.telegram-intake]
+verify_jwt = false

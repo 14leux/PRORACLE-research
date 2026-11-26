@@ -1,0 +1,66 @@
+# Freeze the arms for a screenshot ticket the Telegram intake stored (docs/INTAKE.md).
+#
+# Started only by `workflow_dispatch`: the Supabase Edge Function dispatches it with a narrow GitHub
+# token (one repository, Actions read and write, short expiry) after it has stored a parsed read.
+# Same rules as the runtime workflow (docs/MAINTAINING.md):
+#   - never a pull request, `pull_request_target` or `workflow_run` trigger
+#   - secrets live in the `production` environment, which is limited to the `main` branch
+#   - the database credential is the restricted `proracle_runtime` role token, never a service-role key
+#   - the token is read-only, every action is pinned to a full commit SHA, and the dispatched value
+#     reaches the script only through `env:`, never by interpolation into `run:`
+name: Ticket intake
+
+on:
+  workflow_dispatch:
+    inputs:
+      intake_id:
+        description: "Intake id stored by the Telegram function (a UUID)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ticket-intake
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze screenshot ticket
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Freeze arms A, B and C and reply on Telegram (standard library only)
+        env:
+          INTAKE_ID: ${{ github.event.inputs.intake_id }}
+          PRORACLE_DB_SCHEMA: proracle
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.PRORACLE_RUNTIME_JWT }}
+          SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m proracle.ticket_mode --intake-id "$INTAKE_ID"
+
+      - name: Notify failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl --silent --show-error --max-time 20 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=PRORACLE FAILURE - ticket intake. Run: ${RUN_URL}" > /dev/null
