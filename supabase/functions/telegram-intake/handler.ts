@@ -3,7 +3,7 @@
 // the tests run with fakes and no network.
 
 import { ALLOWED_MEDIA, buildVisionRequest, parseVisionOutput, type ParsedRow, type ParsedTicket, VisionError } from "./vision.ts";
-import { COMMANDS, helpText, MAX_FILE_BYTES, MAX_FIXTURES, MAX_RULE_TEXT_CHARS, PENDING_RULE_MINUTES } from "./commands.ts";
+import { COMMANDS, helpText, MAX_FILE_BYTES, MAX_FIXTURES, MAX_RULE_TEXT_CHARS, MENU, PENDING_RULE_MINUTES } from "./commands.ts";
 import { MATCH_WINDOW_MS, matchRows, type MatchedRow } from "./matching.ts";
 import { describeRule, parseRule } from "./rules.ts";
 import type { AuditAction, AuditOutcome, IntakeStore, UpdateKind } from "./store.ts";
@@ -382,7 +382,24 @@ export async function handleRequest(request: Request, deps: Deps): Promise<Respo
     await swallow(() => ctx.audit("ERROR", "ERROR", "unhandled"));
     await swallow(() => ctx.reply("Something went wrong and I could not finish. Nothing further was changed."));
   }
+  await syncMenuOnce(deps);
   return text("ok");
+}
+
+// The command menu in Telegram is a second copy of the command list, so the function keeps it equal
+// to MENU itself: once per running instance, after the operator's first message has been answered
+// (so it never delays a reply), and only for the operator's chat. After any deploy that changes a
+// command, the menu follows with the next message. A failure is retried with the next message and
+// never changes what the operator sees.
+const menuChecked = new WeakSet<TelegramApi>();
+async function syncMenuOnce(deps: Deps): Promise<void> {
+  if (menuChecked.has(deps.telegram)) return;
+  menuChecked.add(deps.telegram);
+  try {
+    await deps.telegram.syncMenu(MENU);
+  } catch {
+    menuChecked.delete(deps.telegram);
+  }
 }
 
 export { HOUR_MS };

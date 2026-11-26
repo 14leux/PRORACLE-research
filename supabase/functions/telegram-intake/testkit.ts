@@ -14,7 +14,7 @@ import type {
   UpdateKind,
 } from "./store.ts";
 import type { RuleV1 } from "./rules.ts";
-import type { TelegramApi } from "./telegram.ts";
+import type { MenuEntry, TelegramApi } from "./telegram.ts";
 
 export const SECRET = "placeholder-webhook-secret";
 export const ALLOWED = "424242";
@@ -125,6 +125,13 @@ export class FakeTelegram implements TelegramApi {
   sent: { chatId: string; text: string }[] = [];
   files = new Map<string, Uint8Array | null>();
   downloads: string[] = [];
+  /** Each syncMenu call's argument; set `menuFails` to make the call throw. */
+  menuSyncs: (readonly MenuEntry[])[] = [];
+  menuFails = false;
+  syncMenu(menu: readonly MenuEntry[]): Promise<"UNCHANGED" | "UPDATED"> {
+    this.menuSyncs.push(menu);
+    return this.menuFails ? Promise.reject(new Error("menu failed")) : Promise.resolve("UPDATED");
+  }
   send(chatId: string, text: string): Promise<void> {
     this.sent.push({ chatId, text });
     return Promise.resolve();

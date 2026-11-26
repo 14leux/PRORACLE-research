@@ -125,6 +125,39 @@ Deno.test("Telegram: replies are plain text, clipped, and a file over the cap is
   assert.equal(seen.length, 2); // getFile only: the oversized file was never fetched
 });
 
+Deno.test("Telegram menu sync: nothing is written when the menu already matches, the exact list is set when it differs", async () => {
+  const menu = [{ command: "help", description: "Help me" }, { command: "rules", description: "Show rules" }];
+  const same = recorder(json({ ok: true, result: menu }));
+  assert.equal(await new TelegramHttp("t", same.fn).syncMenu(menu), "UNCHANGED");
+  assert.deepEqual(same.seen.map((s) => s.url.split("/").pop()), ["getMyCommands"]);
+
+  for (
+    const stale of [
+      [{ command: "help", description: "Help me" }], // a command is missing
+      [{ command: "rules", description: "Show rules" }, { command: "help", description: "Help me" }], // order
+      [{ command: "help", description: "Old text" }, { command: "rules", description: "Show rules" }], // wording
+      [],
+    ]
+  ) {
+    const differs = recorder(json({ ok: true, result: stale }), json({ ok: true, result: true }));
+    assert.equal(await new TelegramHttp("t", differs.fn).syncMenu(menu), "UPDATED");
+    assert.deepEqual(differs.seen.map((s) => s.url.split("/").pop()), ["getMyCommands", "setMyCommands"]);
+    assert.deepEqual(differs.seen[1].body, { commands: menu });
+  }
+
+  // an unreadable current menu is replaced rather than trusted
+  const unreadable = recorder(json({ ok: false }), json({ ok: true, result: true }));
+  assert.equal(await new TelegramHttp("t", unreadable.fn).syncMenu(menu), "UPDATED");
+});
+
+Deno.test("Telegram menu sync: a refusal or a network error is a TelegramError that never carries the token", async () => {
+  const menu = [{ command: "help", description: "Help me" }];
+  const refused = recorder(json({ ok: true, result: [] }), json({ ok: false, description: "bad" }));
+  await assert.rejects(() => new TelegramHttp("123:SECRET-TOKEN", refused.fn).syncMenu(menu), (e: Error) => !e.message.includes("SECRET-TOKEN"));
+  const down = recorder(new Error("connect failed https://api.telegram.org/bot123:SECRET-TOKEN/getMyCommands"));
+  await assert.rejects(() => new TelegramHttp("123:SECRET-TOKEN", down.fn).syncMenu(menu), (e: Error) => !e.message.includes("SECRET-TOKEN"));
+});
+
 Deno.test("Telegram: a download is returned in memory and a body larger than the cap is dropped", async () => {
   const small = recorder(json({ ok: true, result: { file_path: "docs/a.pdf", file_size: 3 } }), new Response(new Uint8Array([1, 2, 3])));
   assert.deepEqual(await new TelegramHttp("t", small.fn).download("f", 10), new Uint8Array([1, 2, 3]));

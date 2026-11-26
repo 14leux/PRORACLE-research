@@ -81,6 +81,33 @@ Deno.test("the Telegram menu lists exactly the slash commands, each one routable
   assert.ok(!MENU.some((m) => ["yes", "no", "ticket_file"].includes(m.command)));
 });
 
+Deno.test("the function keeps Telegram's menu equal to MENU: once per instance, only for the operator, after the reply", async () => {
+  const kit = makeKit();
+  await post(kit, textMessage("/help", { updateId: 7001 }));
+  assert.deepEqual(kit.tg.menuSyncs, [MENU]);
+  assert.ok(kit.tg.sent.length === 1, "the reply is sent");
+  await post(kit, textMessage("/rules", { updateId: 7002 }));
+  assert.equal(kit.tg.menuSyncs.length, 1, "checked once per running instance");
+
+  const stranger = makeKit();
+  await post(stranger, textMessage("/help", { chatId: 999 }));
+  await handleRequest(webhook(textMessage("/help"), {}), stranger.deps); // no secret header
+  assert.equal(stranger.tg.menuSyncs.length, 0, "no sync for a stranger or an unauthenticated call");
+});
+
+Deno.test("a failing menu sync never changes the reply or the response, and is retried with the next message", async () => {
+  const kit = makeKit();
+  kit.tg.menuFails = true;
+  const first = await post(kit, textMessage("/help", { updateId: 7101 }));
+  assert.equal(first.status, 200);
+  assert.equal(kit.tg.texts, helpText(10));
+  kit.tg.menuFails = false;
+  await post(kit, textMessage("/rules", { updateId: 7102 }));
+  assert.equal(kit.tg.menuSyncs.length, 2);
+  await post(kit, textMessage("/ticket", { updateId: 7103 }));
+  assert.equal(kit.tg.menuSyncs.length, 2, "stops once it has succeeded");
+});
+
 Deno.test("past the daily cap the file is refused before it is downloaded or read", async () => {
   const kit = makeKit({ dailyCap: 2 });
   kit.setVision({ fixtures: [row("Alpha", "Beta")] });
