@@ -91,7 +91,7 @@ You need your own Telegram bot, Anthropic key and Supabase project. Nothing here
 | `GITHUB_REPOSITORY` | optional; default `14leux/PRORACLE-research` |
 
    Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to the function itself. The function uses that key only for the intake and ticket tables.
-7. **Deploy and register** (once, on your own machine, with secrets taken from your environment rather than typed into a command history): deploy with `supabase functions deploy telegram-intake`, then register the webhook with Telegram's `setWebhook`, passing your function URL, your `secret_token` and `allowed_updates=["message"]`. Send `/help` to check.
+7. **Deploy and register** (once, on your own machine, with secrets taken from your environment rather than typed into a command history): deploy with `supabase functions deploy telegram-intake`, then register the webhook with Telegram's `setWebhook`, passing your function URL, your `secret_token` and `allowed_updates=["message"]`. Send `/help` to check. To show the commands in Telegram's menu (the button beside the message box), set `TELEGRAM_BOT_TOKEN` in your shell environment and run `deno run --allow-net=api.telegram.org --allow-env=TELEGRAM_BOT_TOKEN supabase/functions/telegram-intake/set_menu.ts`; the menu comes from the same list as `/help` (`deno run supabase/functions/telegram-intake/set_menu.ts --print` shows it), and a test keeps the two in step. Re-run it after a command is added.
 
 The function refuses every call without the secret header, so it is safe to deploy before registering the webhook. If a key leaks, rotate it in its own console and update the secret; deleting the webhook (`deleteWebhook`) switches the intake off.
 
