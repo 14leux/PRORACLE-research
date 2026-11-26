@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { commandFor, handleRequest, ROUTES } from "./handler.ts";
 import { CANNOT, COMMANDS, helpText, MENU } from "./commands.ts";
+import { VisionError } from "./vision.ts";
 import { ALLOWED, fileMessage, fixture, makeKit, NOW, row, SECRET, textMessage, webhook } from "./testkit.ts";
 
 const activeVersion = (k: ReturnType<typeof makeKit>): number | null => k.store.active?.version ?? null;
@@ -106,6 +107,45 @@ Deno.test("a failing menu sync never changes the reply or the response, and is r
   assert.equal(kit.tg.menuSyncs.length, 2);
   await post(kit, textMessage("/ticket", { updateId: 7103 }));
   assert.equal(kit.tg.menuSyncs.length, 2, "stops once it has succeeded");
+});
+
+Deno.test("a vision service failure is audited with its reason and the reply says it was the service, not the file", async () => {
+  const failing = makeKit({ vision: () => Promise.reject(new VisionError("REQUEST_FAILED", "HTTP 400 invalid_request_error credit balance is too low")) });
+  await post(failing, fileMessage({ mime: "application/pdf" }));
+  const audit = failing.store.audits.at(-1)!;
+  assert.deepEqual([audit.action, audit.outcome], ["TICKET", "ERROR"]);
+  assert.equal(audit.detail, "vision REQUEST_FAILED HTTP 400 invalid_request_error credit balance is too low");
+  assert.match(failing.tg.sent.at(-1)!.text, /reading service/);
+  assert.doesNotMatch(failing.tg.sent.at(-1)!.text, /clearer image/);
+
+  const timeout = makeKit({ vision: () => Promise.reject(new VisionError("TIMEOUT")) });
+  await post(timeout, fileMessage("photo"));
+  assert.equal(timeout.store.audits.at(-1)!.detail, "vision TIMEOUT");
+
+  const unreadable = makeKit({ vision: () => Promise.resolve("not an object") });
+  await post(unreadable, fileMessage("photo"));
+  assert.equal(unreadable.store.audits.at(-1)!.detail, "vision BAD_RESPONSE");
+  assert.match(unreadable.tg.sent.at(-1)!.text, /clearer image/);
+});
+
+Deno.test("a failing menu sync is audited with its reason, never changes the reply, and the check repeats at most hourly", async () => {
+  let t = NOW.getTime();
+  const kit = makeKit({ now: () => new Date(t) });
+  kit.tg.menuFails = true;
+  await post(kit, textMessage("/help", { updateId: 7201 }));
+  const failure = kit.store.audits.find((a) => a.detail?.startsWith("menu_sync"))!;
+  assert.deepEqual([failure.action, failure.outcome, failure.detail], ["ERROR", "ERROR", "menu_sync HTTP 400 Bad Request: test"]);
+  assert.equal(kit.tg.texts, helpText(10));
+
+  kit.tg.menuFails = false;
+  await post(kit, textMessage("/rules", { updateId: 7202 }));
+  assert.equal(kit.tg.menuSyncs.length, 2, "a failed check is retried at the next message");
+  t += 59 * 60_000;
+  await post(kit, textMessage("/ticket", { updateId: 7203 }));
+  assert.equal(kit.tg.menuSyncs.length, 2, "no recheck within the hour");
+  t += 2 * 60_000;
+  await post(kit, textMessage("/ticket", { updateId: 7204 }));
+  assert.equal(kit.tg.menuSyncs.length, 3, "rechecked after an hour, so a menu changed from outside is put back");
 });
 
 Deno.test("past the daily cap the file is refused before it is downloaded or read", async () => {

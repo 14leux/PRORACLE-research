@@ -67,7 +67,7 @@ Fixtures that already kicked off, have no rating prediction or were not matched 
 - The image or PDF is read in memory and **never stored** by this project. It is sent to the Anthropic API for the read; Anthropic's own retention terms apply to that request, so check them before use.
 - Only **parsed values** are stored, in your own Supabase project: team names, kickoff time, the three decimal odds, the bookmaker label as printed, the observed time, and which stored fixture a row matched.
 - A screenshot is third-party content and prices belong to their source. They stay in your private database, are used only by arm B and the model-versus-market comparison, and are never committed, shared or published ([DATA_POLICY.md](DATA_POLICY.md)). Do not use the intake with a site whose terms forbid you from copying its prices.
-- The audit log holds short fixed details and never message or image content. A stranger's message produces a row with no content.
+- The audit log holds short fixed details and never message or image content. A stranger's message produces a row with no content. When a call to the reading service or to Telegram fails, the row also carries the HTTP status and the service's own short error text (cut to 100 characters, control characters removed), for example `vision REQUEST_FAILED HTTP 401 authentication_error invalid x-api-key`; it never carries a key, a token, the file or the request. A menu sync that fails is recorded the same way (`menu_sync ...`).
 
 ## Bring your own keys
 

@@ -7,7 +7,7 @@ import { COMMANDS, helpText, MAX_FILE_BYTES, MAX_FIXTURES, MAX_RULE_TEXT_CHARS, 
 import { MATCH_WINDOW_MS, matchRows, type MatchedRow } from "./matching.ts";
 import { describeRule, parseRule } from "./rules.ts";
 import type { AuditAction, AuditOutcome, IntakeStore, UpdateKind } from "./store.ts";
-import type { TelegramApi } from "./telegram.ts";
+import { TelegramError, type TelegramApi } from "./telegram.ts";
 
 export interface Deps {
   secretToken: string;
@@ -228,8 +228,13 @@ const ticketFile: Route = async (c) => {
     parsed = parseVisionOutput(raw, { today, utcOffsetMinutes: deps.utcOffsetMinutes });
   } catch (error) {
     const code = error instanceof VisionError ? error.code : "ERROR";
-    await c.audit("TICKET", "ERROR", `vision ${code}`);
-    return c.reply("I could not read that file this time. Nothing was stored. Try again with a clearer image.");
+    const reason = error instanceof VisionError && error.reason ? ` ${error.reason}` : "";
+    await c.audit("TICKET", "ERROR", `vision ${code}${reason}`.slice(0, 200));
+    return c.reply(
+      code === "BAD_RESPONSE" || code === "ERROR"
+        ? "I could not read that file this time. Nothing was stored. Try again with a clearer image."
+        : "The reading service did not accept or answer that request, so nothing was read or stored. This is not about the file's content; the cause is in the audit log.",
+    );
   }
   if (parsed.rows.length === 0) {
     await c.audit("TICKET", "REFUSED", "no fixtures read");
@@ -382,23 +387,29 @@ export async function handleRequest(request: Request, deps: Deps): Promise<Respo
     await swallow(() => ctx.audit("ERROR", "ERROR", "unhandled"));
     await swallow(() => ctx.reply("Something went wrong and I could not finish. Nothing further was changed."));
   }
-  await syncMenuOnce(deps);
+  await syncMenu(deps, (detail) => swallow(() => ctx.audit("ERROR", "ERROR", detail)));
   return text("ok");
 }
 
 // The command menu in Telegram is a second copy of the command list, so the function keeps it equal
-// to MENU itself: once per running instance, after the operator's first message has been answered
-// (so it never delays a reply), and only for the operator's chat. After any deploy that changes a
-// command, the menu follows with the next message. A failure is retried with the next message and
-// never changes what the operator sees.
-const menuChecked = new WeakSet<TelegramApi>();
-async function syncMenuOnce(deps: Deps): Promise<void> {
-  if (menuChecked.has(deps.telegram)) return;
-  menuChecked.add(deps.telegram);
+// to MENU itself: checked after the operator's first message on a running instance and again at most
+// once an hour (so a menu changed from outside is put back), after the reply has been sent (so it
+// never delays one), and only for the operator's chat. After any deploy that changes a command, the
+// menu follows with the next message. A failure is written to the audit log with a short reason,
+// retried with the next message, and never changes what the operator sees.
+export const MENU_RECHECK_MS = HOUR_MS;
+const menuCheckedAt = new WeakMap<TelegramApi, number>();
+async function syncMenu(deps: Deps, auditFailure: (detail: string) => Promise<unknown>): Promise<void> {
+  const now = deps.now().getTime();
+  const last = menuCheckedAt.get(deps.telegram);
+  if (last !== undefined && now - last < MENU_RECHECK_MS) return;
+  menuCheckedAt.set(deps.telegram, now);
   try {
     await deps.telegram.syncMenu(MENU);
-  } catch {
-    menuChecked.delete(deps.telegram);
+  } catch (error) {
+    menuCheckedAt.delete(deps.telegram);
+    const reason = error instanceof TelegramError && error.reason ? ` ${error.reason}` : "";
+    await auditFailure(`menu_sync${reason}`.slice(0, 200));
   }
 }
 

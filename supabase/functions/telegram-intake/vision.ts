@@ -31,9 +31,24 @@ export interface ParsedTicket {
 }
 
 export class VisionError extends Error {
-  constructor(readonly code: "REQUEST_FAILED" | "BAD_RESPONSE" | "TIMEOUT") {
+  /** `reason` is a short, sanitised note for the audit log (never the key, the file or the request body). */
+  constructor(readonly code: "REQUEST_FAILED" | "BAD_RESPONSE" | "TIMEOUT", readonly reason: string | null = null) {
     super(code);
   }
+}
+
+/** HTTP status, the API's error type and its message (Anthropic's own text, cut short and cleaned). */
+async function failureReason(response: Response): Promise<string> {
+  let type = "";
+  let message = "";
+  try {
+    const data = (await response.json()) as { error?: { type?: unknown; message?: unknown } };
+    if (typeof data?.error?.type === "string") type = data.error.type.replace(/[^A-Za-z_]/g, "").slice(0, 40);
+    if (typeof data?.error?.message === "string") message = data.error.message.replace(/[^\x20-\x7e]/g, " ").trim().slice(0, 100);
+  } catch {
+    /* not JSON: the status alone is the reason */
+  }
+  return [`HTTP ${response.status}`, type, message].filter((part) => part !== "").join(" ").slice(0, 150);
 }
 
 const TEAM_NAME = /^[\p{L}\p{N}][\p{L}\p{N} .'&\-/()]*$/u;
@@ -179,9 +194,11 @@ export async function callVision(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    throw new VisionError(error instanceof DOMException && error.name === "TimeoutError" ? "TIMEOUT" : "REQUEST_FAILED");
+    const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+    const name = error instanceof Error ? error.name.replace(/[^A-Za-z]/g, "").slice(0, 30) : "";
+    throw new VisionError(timedOut ? "TIMEOUT" : "REQUEST_FAILED", timedOut ? null : `network ${name}`.trim());
   }
-  if (!response.ok) throw new VisionError("REQUEST_FAILED");
+  if (!response.ok) throw new VisionError("REQUEST_FAILED", await failureReason(response));
   let data: unknown;
   try {
     data = await response.json();
