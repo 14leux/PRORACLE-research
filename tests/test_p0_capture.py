@@ -170,10 +170,16 @@ class ArmTests(unittest.TestCase):
 
 
 class FakeTicketStore:
-    def __init__(self, pool=None, *, exists=False, counts=COUNTS, fail=None):
+    def __init__(self, pool=None, *, exists=False, counts=COUNTS, fail=None, rules=()):
         self.pool, self.exists, self.counts, self.fail = pool or [], exists, counts, fail
+        self.rules = list(rules)
         self.pool_args = None
         self.appended: list[tk.Ticket] = []
+
+    def active_rules(self):
+        if self.fail == "rules":
+            raise SupabaseStoreError(http_status=404)
+        return self.rules
 
     def ticket_exists(self, ticket_date, design_version):
         if self.fail == "exists":
@@ -235,6 +241,46 @@ class RunDailyTicketTests(unittest.TestCase):
         store = FakeTicketStore([cand(i) for i in range(17)])
         tk.run_daily_ticket(store, NOW)
         self.assertEqual(len(store.appended[0].fixtures), 17)
+
+    def test_active_rules_add_their_own_arm_b_on_the_simulated_ticket_but_odds_rules_do_not(self) -> None:
+        def rec(version, structure):
+            return {"rule_id": f"r{version}", "version": version, "structure": {"v": 1, **structure}}
+
+        rules = [
+            rec(2, {"force_draws": {"count": 2, "basis": "draw_score"}}),
+            rec(4, {"reverse": {"count": 3, "basis": "margin"}}),
+            rec(5, {"reverse": {"count": 3, "basis": "odds_disagreement"}}),  # needs odds: none on a simulated ticket
+        ]
+        store = FakeTicketStore([cand(i) for i in range(25)], rules=rules)
+        out = tk.run_daily_ticket(store, NOW)
+        self.assertEqual((out["ticket_created"], out["ticket_errors"]), (1, 0))
+        ticket = store.appended[0]
+        b = [p for p in ticket.picks if p.arm == "B"]
+        self.assertEqual({p.arm_version for p in b}, {"rule-v2", "rule-v4"})
+        for version in ("rule-v2", "rule-v4"):
+            self.assertEqual({p.fixture_id for p in b if p.arm_version == version}, set(ticket.fixtures))
+        keys = [(p.fixture_id, p.arm, p.arm_version) for p in ticket.picks]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual({p.arm for p in ticket.picks if p.arm != "B"}, {"A", "C"})
+
+    def test_a_rule_with_no_fixture_in_its_leagues_adds_no_arm_b_to_the_day(self) -> None:
+        rule = {"rule_id": "r", "version": 3, "structure": {"v": 1, "force_draws": {"count": 1, "basis": "draw_score"}, "only_leagues": ["Nowhere League"]}}
+        store = FakeTicketStore([cand(i) for i in range(25)], rules=[rule])
+        tk.run_daily_ticket(store, NOW)
+        self.assertEqual({p.arm for p in store.appended[0].picks}, {"A", "C"})
+
+    def test_unreadable_or_invalid_rules_write_no_ticket_so_a_later_run_can_include_them(self) -> None:
+        for label, store in (
+            ("unreadable", FakeTicketStore([cand(i) for i in range(25)], fail="rules")),
+            ("invalid", FakeTicketStore([cand(i) for i in range(25)], rules=[{"version": 1, "structure": {"v": 9}}])),
+            ("six", FakeTicketStore([cand(i) for i in range(25)], rules=[
+                {"rule_id": f"r{v}", "version": v, "structure": {"v": 1, "force_draws": {"count": 1, "basis": "draw_score"}}} for v in range(1, 7)
+            ])),
+        ):
+            with self.subTest(label):
+                out = tk.run_daily_ticket(store, NOW)
+                self.assertEqual((out["ticket_errors"], out["ticket_created"]), (1, 0))
+                self.assertEqual(store.appended, [])
 
     def test_a_pool_above_full_size_is_still_capped_at_twenty(self) -> None:
         store = FakeTicketStore([cand(i) for i in range(23)])

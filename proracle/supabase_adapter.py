@@ -40,7 +40,7 @@ _TABLES = frozenset(
         # Telegram intake (migration 20261127000000); read-only for the runtime role.
         "intake_tickets",
         "intake_ticket_rows",
-        "intake_active_rule",
+        "intake_active_rules",  # migration 20261128000000 (several rules at once)
     }
 )
 _CANDIDATE_FIXTURE = "fixture:fixtures!predictions_fixture_id_fkey(competition_id,competition_name,status)"
@@ -737,15 +737,14 @@ class SupabaseRESTStore:
         )
         return bool(self._rows(value))
 
-    def active_rule(self) -> Mapping[str, Any] | None:
-        """The rule set in force for arm B (the intake_active_rule view), or None."""
+    def active_rules(self) -> list[Mapping[str, Any]]:
+        """Every rule set in force for arm B (the intake_active_rules view), oldest version first."""
         value, _ = self._request(
             "GET",
-            "intake_active_rule",
-            query=(("select", "rule_id,version,structure"), ("limit", "1")),
+            "intake_active_rules",
+            query=(("select", "rule_id,version,structure"), ("order", "version.asc"), ("limit", "20")),
         )
-        rows = self._rows(value)
-        return rows[0] if rows else None
+        return list(self._rows(value))
 
     def draw_counts(self) -> DrawCounts:
         """Matches and draws per competition over every current FINAL result (corrections resolved)."""

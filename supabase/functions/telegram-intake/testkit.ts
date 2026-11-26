@@ -28,8 +28,10 @@ export class FakeStore implements IntakeStore {
   intakes: { ticket: IntakeInsert; rows: MatchedRow[]; id: string }[] = [];
   audits: { action: AuditAction; outcome: AuditOutcome; detail: string | null; updateId: number | null }[] = [];
   rules: RuleRecord[] = [];
-  active: RuleRecord | null = null;
+  /** The rules in force, oldest version first. */
+  active: RuleRecord[] = [];
   pending: RuleRecord | null = null;
+  retiring: RuleRecord | null = null;
   events: string[] = [];
   tickets: TicketSummary[] = [];
   score: ScoreRow[] = [];
@@ -81,14 +83,19 @@ export class FakeStore implements IntakeStore {
     return Promise.resolve();
   }
 
-  activeRule() {
-    this.guard("activeRule");
-    return Promise.resolve(this.active);
+  activeRules() {
+    this.guard("activeRules");
+    return Promise.resolve([...this.active].sort((a, b) => a.version - b.version));
   }
 
   pendingRule() {
     this.guard("pendingRule");
     return Promise.resolve(this.pending);
+  }
+
+  pendingRetirement() {
+    this.guard("pendingRetirement");
+    return Promise.resolve(this.retiring);
   }
 
   proposeRule(structure: RuleV1, sourceText: string): Promise<RuleRecord> {
@@ -100,12 +107,33 @@ export class FakeStore implements IntakeStore {
     return Promise.resolve(rule);
   }
 
-  activateRule(rule: RuleRecord, previous: RuleRecord | null): Promise<void> {
+  activateRule(rule: RuleRecord): Promise<void> {
     this.guard("activateRule");
-    this.active = rule;
+    this.active = [...this.active, rule];
     this.pending = null;
     this.events.push(`ACTIVATED v${rule.version}`);
-    if (previous) this.events.push(`RETIRED v${previous.version}`);
+    return Promise.resolve();
+  }
+
+  requestRetirement(rule: RuleRecord): Promise<void> {
+    this.guard("requestRetirement");
+    this.retiring = rule;
+    this.events.push(`RETIRE_REQUESTED v${rule.version}`);
+    return Promise.resolve();
+  }
+
+  confirmRetirement(rule: RuleRecord): Promise<void> {
+    this.guard("confirmRetirement");
+    this.active = this.active.filter((r) => r.rule_id !== rule.rule_id);
+    this.retiring = null;
+    this.events.push(`RETIRED v${rule.version}`);
+    return Promise.resolve();
+  }
+
+  declineRetirement(rule: RuleRecord): Promise<void> {
+    this.guard("declineRetirement");
+    this.retiring = null;
+    this.events.push(`RETIRE_DECLINED v${rule.version}`);
     return Promise.resolve();
   }
 

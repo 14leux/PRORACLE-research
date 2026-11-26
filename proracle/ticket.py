@@ -4,10 +4,11 @@ Nothing here changes a prediction. A ticket is a record of what the arms would h
 written before every kickoff on it and never altered, so the arms can be scored against results
 later. Arm A is the live rating model's earliest pre-kickoff prediction for the fixture. Arm C
 forces the FORCED_DRAWS fixtures with the highest draw score to DRAW and otherwise follows arm A.
-Arm B is written only when a rule set is active, and none exists yet.
+Arm B is one pick set per active rule set (up to five at once, each arm_version "rule-v<N>"); a
+simulated ticket has no odds, so a rule that needs odds gets no pick set on it.
 
-The selection and the arms are pure functions of the stored rows and the date, so a ticket can be
-recomputed and checked. No odds, stake or provider payload is used or stored.
+The selection and the arms are pure functions of the stored rows, the active rules and the date, so
+a ticket can be recomputed and checked. No odds, stake or provider payload is used or stored.
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Protocol
+from typing import Any, Protocol
 
+from proracle.arm_b import Rule, in_scope, parse_active_rules
 from proracle.rating import RATING_MODEL_NAME
 
 TICKET_KIND = "SIMULATED"
@@ -100,6 +102,8 @@ class TicketStore(Protocol):
 
     def draw_counts(self) -> DrawCounts: ...
 
+    def active_rules(self) -> list[Mapping[str, Any]]: ...
+
     def append_ticket(self, ticket: Ticket) -> None: ...
 
 
@@ -144,13 +148,72 @@ def draw_score(counts: DrawCounts, candidate: Candidate) -> float:
     return shrunk_draw_rate(counts, candidate.competition_id) + candidate.draw
 
 
+def devig(odds: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Decimal 1X2 odds to fair probabilities by proportional margin removal."""
+    raw = tuple(1.0 / o for o in odds)
+    total = sum(raw)
+    return (raw[0] / total, raw[1] / total, raw[2] / total)
+
+
+def _margin(c: Candidate) -> float:
+    top = sorted((c.home, c.draw, c.away), reverse=True)
+    return top[0] - top[1]
+
+
+def rule_picks(
+    rule: Rule,
+    items: Sequence[tuple[Candidate, str | None]],
+    a_pick: Mapping[str, str],
+    scores: Mapping[str, float],
+    market: Mapping[str, tuple[float, float]],
+) -> tuple[list[ArmPick], str]:
+    """One rule set's arm B picks for the (candidate, league name) items in its scope, and a note.
+
+    A pick equals arm A's unless a directive adjusted it (FORCED_DRAW or REVERSED), so the rule can
+    only differ from arm A on the adjusted picks. `market` maps a fixture id to (model probability,
+    de-vigged market probability) of arm A's pick; without it an odds-based reversal has no candidates.
+    """
+    scope = [c for c, name in items if in_scope(rule, name)]
+    chosen: dict[str, tuple[str, str, float | None]] = {}  # fixture id -> (pick, adjustment, score)
+    if rule.force_draws:
+        ranked = sorted(scope, key=lambda c: (-scores[c.fixture_id], c.fixture_id))
+        for c in ranked[: rule.force_draws]:
+            chosen[c.fixture_id] = ("DRAW", "FORCED_DRAW", scores[c.fixture_id])
+    if rule.reverse_count:
+        pool = [c for c in scope if c.fixture_id not in chosen and a_pick[c.fixture_id] != "DRAW"]
+        if rule.reverse_basis == "odds_disagreement":
+            values: dict[str, float] = {
+                c.fixture_id: abs(market[c.fixture_id][0] - market[c.fixture_id][1]) for c in pool if c.fixture_id in market
+            }
+            ranked_r = sorted((c for c in pool if c.fixture_id in values), key=lambda c: (-values[c.fixture_id], c.fixture_id))
+        else:
+            values = {c.fixture_id: _margin(c) for c in pool}
+            ranked_r = sorted(pool, key=lambda c: (values[c.fixture_id], c.fixture_id))
+        for c in ranked_r[: rule.reverse_count]:
+            flipped = "AWAY_WIN" if a_pick[c.fixture_id] == "HOME_WIN" else "HOME_WIN"
+            chosen[c.fixture_id] = (flipped, "REVERSED", values[c.fixture_id])
+    picks: list[ArmPick] = []
+    for c in scope:
+        pick, adjustment, score = chosen.get(c.fixture_id, (a_pick[c.fixture_id], None, None))
+        picks.append(ArmPick(c.fixture_id, "B", rule.arm_version, pick, False, score, None, c.kickoff_at, adjustment))
+    wanted = (rule.force_draws or 0) + (rule.reverse_count or 0)
+    note = f"rule v{rule.version}: {len(chosen)} of {wanted} requested adjustments applied on {len(scope)} fixture(s) in scope"
+    if not scope:
+        note = f"rule v{rule.version}: no fixture is in the rule's leagues, so it has no picks"
+    return picks, note
+
+
 def build_ticket(
     candidates: Sequence[Candidate],
     counts: DrawCounts,
     ticket_date: date,
     frozen_at: datetime,
+    rules: Sequence[Rule] = (),
 ) -> Ticket | None:
-    """The day's ticket, or None when the pool is too small or there is no history to score with."""
+    """The day's ticket, or None when the pool is too small or there is no history to score with.
+
+    Each rule that needs no odds adds its own arm B pick set; a rule with no fixture in its leagues
+    that day adds none."""
     usable = [c for c in candidates if c.kickoff_at > frozen_at]
     if len(usable) < MIN_POOL or counts.total <= 0:
         return None
@@ -180,6 +243,12 @@ def build_ticket(
                 c.kickoff_at,
             )
         )
+    a_picks = {c.fixture_id: pick_outcome(c.home, c.draw, c.away) for c in chosen}
+    for rule in rules:
+        if rule.needs_odds:
+            continue  # a simulated ticket has no odds
+        rule_pick_list, _note = rule_picks(rule, [(c, c.competition_name) for c in chosen], a_picks, scores, {})
+        picks.extend(rule_pick_list)
     return Ticket(
         ticket_id=ticket_id_for(ticket_date),
         ticket_date=ticket_date,
@@ -200,8 +269,12 @@ def run_daily_ticket(store: TicketStore, now: datetime) -> dict[str, int]:
         if store.ticket_exists(ticket_date, DESIGN_VERSION):
             summary["ticket_exists"] = 1
             return summary
+        # The rules are read before anything is written. A ticket is written once a day and never
+        # amended, so if the rules cannot be read the ticket waits for the next run instead of
+        # being written without the rule arms and quietly skewing the comparison.
+        rules = parse_active_rules(store.active_rules())
         candidates = store.ticket_pool(now, now + POOL_WINDOW, RATING_MODEL_NAME)
-        ticket = build_ticket(candidates, store.draw_counts(), ticket_date, now)
+        ticket = build_ticket(candidates, store.draw_counts(), ticket_date, now, rules)
         if ticket is None:
             summary["ticket_skipped"] = 1
             return summary

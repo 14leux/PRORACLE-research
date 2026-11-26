@@ -80,6 +80,21 @@ export function parseRule(text: string): ParsedRule {
   return { ok: true, rule };
 }
 
+/**
+ * A canonical text for a rule: two rules with the same effect give the same text, whatever order the
+ * leagues were typed in or how they were capitalised. Used to refuse a second copy of an active rule,
+ * which would only add an arm B that duplicates another.
+ */
+export function canonicalRule(rule: RuleV1): string {
+  const names = (list?: string[]) => list?.map((n) => n.toLowerCase()).sort();
+  return JSON.stringify({
+    force_draws: rule.force_draws ?? null,
+    reverse: rule.reverse ?? null,
+    only_leagues: names(rule.only_leagues) ?? null,
+    skip_leagues: names(rule.skip_leagues) ?? null,
+  });
+}
+
 export function describeRule(rule: RuleV1): string {
   const parts: string[] = [];
   if (rule.force_draws) parts.push(`force the ${rule.force_draws.count} highest draw scores to DRAW`);

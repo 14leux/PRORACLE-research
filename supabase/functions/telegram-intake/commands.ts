@@ -15,6 +15,8 @@ export const MAX_FIXTURES = 20;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const PENDING_RULE_MINUTES = 60;
 export const MAX_RULE_TEXT_CHARS = 300;
+/** Rules in force at once; each is its own arm B on the same fixtures. The Python side enforces the same number. */
+export const MAX_ACTIVE_RULES = 5;
 
 export const COMMANDS: readonly CommandSpec[] = [
   {
@@ -27,16 +29,27 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "rule",
     usage: "/rule <directives separated by ;>",
     summary:
-      "Propose a rule set for arm B, for example: /rule 5 draws; 4 upsets by margin; only Premier League, La Liga. Directives: N draws, N upsets by margin|odds, only <leagues>, skip <leagues>. I echo it back and it is used only after YES.",
+      `Propose a rule for arm B, for example: /rule 5 draws; 4 upsets by margin; only Premier League, La Liga. Directives: N draws, N upsets by margin|odds, only <leagues>, skip <leagues>. I echo it back and it is used only after YES. Up to ${MAX_ACTIVE_RULES} rules run at once, each as its own arm (rule v3 is arm B3) on the same fixtures as arms A and C.`,
     menu: "Propose a rule for arm B (confirm with YES)",
   },
-  { name: "yes", usage: "YES", summary: `Activate the rule I last proposed (it waits ${PENDING_RULE_MINUTES} minutes).` },
-  { name: "no", usage: "NO", summary: "Cancel the rule I last proposed." },
+  {
+    name: "retire",
+    usage: "/retire <version>",
+    summary:
+      `Ask to stop one active rule, for example: /retire 3. It stops only after YES (it waits ${PENDING_RULE_MINUTES} minutes). Its earlier picks stay and are still scored; starting it again gives it a new version.`,
+    menu: "Stop one active rule (confirm with YES)",
+  },
+  {
+    name: "yes",
+    usage: "YES",
+    summary: `Confirm what I last asked about: activate the rule I proposed, or retire the rule I asked about (it waits ${PENDING_RULE_MINUTES} minutes).`,
+  },
+  { name: "no", usage: "NO", summary: "Cancel the rule I last proposed, or the retirement I last asked about." },
   {
     name: "rules",
     usage: "/rules",
-    summary: "Show the active rule set and any proposal waiting for YES.",
-    menu: "Show the active rule set",
+    summary: "Show every active rule and any proposal or retirement waiting for YES.",
+    menu: "Show the active rules",
   },
   {
     name: "ticket",
@@ -47,8 +60,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "scoreboard",
     usage: "/scoreboard",
-    summary: "Hit rate of each arm on settled ticket picks. A calibration report card, not evidence of an edge.",
-    menu: "Arm hit rates on settled picks",
+    summary:
+      "Hit rate of each arm and each rule on settled ticket picks, with what arms A and C picked on the same fixtures and a rough margin of error. A calibration report card, not evidence of an edge.",
+    menu: "Arm and rule hit rates on settled picks",
   },
   { name: "help", usage: "/help", summary: "Show this list.", menu: "What I can do, limits and what I cannot do" },
 ];
@@ -63,7 +77,7 @@ export const CANNOT: readonly string[] = [
   "Change the model or arm A.",
   "Put odds into arm A or arm C (odds are used only by arm B and the market comparison).",
   "Give stake, bankroll or profit advice.",
-  "Apply a rule change without a YES from you.",
+  "Apply a rule change without a YES from you (starting or stopping a rule).",
   "Act for any other chat.",
 ];
 

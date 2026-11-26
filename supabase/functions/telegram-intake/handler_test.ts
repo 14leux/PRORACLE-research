@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import { commandFor, handleRequest, ROUTES } from "./handler.ts";
 import { CANNOT, COMMANDS, helpText, MENU } from "./commands.ts";
 import { VisionError } from "./vision.ts";
+import type { RuleV1 } from "./rules.ts";
+import type { RuleRecord } from "./store.ts";
 import { ALLOWED, fileMessage, fixture, makeKit, NOW, row, SECRET, textMessage, webhook } from "./testkit.ts";
 
-const activeVersion = (k: ReturnType<typeof makeKit>): number | null => k.store.active?.version ?? null;
+const activeVersions = (k: ReturnType<typeof makeKit>): number[] => k.store.active.map((r) => r.version);
+const ruleRec = (version: number, structure: RuleV1 = { v: 1, force_draws: { count: version, basis: "draw_score" } }): RuleRecord => ({
+  rule_id: `rule-${version}`,
+  version,
+  structure,
+  source_text: `${version} draws`,
+});
 
 // 2026-11-26 15:00 in the default East Africa offset (+03:00) is 12:00 UTC.
 const KICKOFF = "2026-11-26T12:00:00Z";
@@ -239,7 +247,7 @@ Deno.test("instruction-like text in the image cannot cause an action", async () 
   // nothing was proposed, activated or dispatched, and the extra keys went nowhere
   assert.deepEqual(kit.store.rules, []);
   assert.deepEqual(kit.store.events, []);
-  assert.equal(kit.store.active, null);
+  assert.deepEqual(kit.store.active, []);
   assert.deepEqual(kit.dispatched, []);
   // the odd names were stored only as parsed rows, unmatched; the markup and over-long names were dropped
   const names = kit.store.intakes[0].rows.map((r) => r.row.home_team);
@@ -281,16 +289,18 @@ Deno.test("a rule is proposed, echoed, and used only after YES", async () => {
   const kit = makeKit();
   await post(kit, textMessage("/rule 5 draws; 4 upsets by margin; only Premier League, La Liga"));
   assert.equal(kit.store.rules.length, 1);
-  assert.equal(kit.store.active, null); // proposing changes nothing
-  assert.match(kit.tg.sent.at(-1)!.text, /Proposed rule v1/);
+  assert.deepEqual(kit.store.active, []); // proposing changes nothing
+  assert.match(kit.tg.sent.at(-1)!.text, /Proposed rule v1 as arm B1/);
+  assert.match(kit.tg.sent.at(-1)!.text, /0 of 5 rule slots are in use/);
   assert.match(kit.tg.sent.at(-1)!.text, /Nothing changes until you reply YES/);
   assert.match(kit.tg.sent.at(-1)!.text, /force the 5 highest draw scores to DRAW/);
   assert.match(kit.tg.sent.at(-1)!.text, /only leagues: Premier League, La Liga/);
   // other messages, and a YES-looking sentence, do not activate it
   for (const word of ["yes please do it", "ok", "y", "1"]) await post(kit, textMessage(word));
-  assert.equal(kit.store.active, null);
+  assert.deepEqual(kit.store.active, []);
   await post(kit, textMessage("YES"));
-  assert.equal(activeVersion(kit), 1);
+  assert.deepEqual(activeVersions(kit), [1]);
+  assert.match(kit.tg.sent.at(-1)!.text, /Rule v1 is now active as arm B1/);
   assert.deepEqual(kit.store.events, ["PROPOSED v1", "ACTIVATED v1"]);
   assert.ok(kit.store.audits.some((a) => a.action === "RULE_ACTIVATED" && a.outcome === "OK"));
 });
@@ -299,24 +309,104 @@ Deno.test("YES with nothing pending does nothing, and NO cancels a proposal", as
   const kit = makeKit();
   await post(kit, textMessage("YES"));
   assert.match(kit.tg.sent.at(-1)!.text, /Nothing is waiting for YES/);
-  assert.equal(kit.store.active, null);
+  assert.deepEqual(kit.store.active, []);
   await post(kit, textMessage("/rule 3 upsets by odds"));
   await post(kit, textMessage("no"));
   assert.match(kit.tg.sent.at(-1)!.text, /Cancelled rule v1/);
   assert.equal(kit.store.pending, null);
   await post(kit, textMessage("YES")); // the cancelled proposal cannot be revived
-  assert.equal(kit.store.active, null);
+  assert.deepEqual(kit.store.active, []);
   assert.deepEqual(kit.store.events, ["PROPOSED v1", "DECLINED v1"]);
 });
 
-Deno.test("activating a new rule retires the previous one", async () => {
+Deno.test("a second rule runs beside the first and nothing is retired by activating it", async () => {
   const kit = makeKit();
   await post(kit, textMessage("/rule 5 draws"));
   await post(kit, textMessage("YES"));
   await post(kit, textMessage("/rule 2 upsets"));
+  assert.match(kit.tg.sent.at(-1)!.text, /1 of 5 rule slots are in use/);
   await post(kit, textMessage("YES"));
-  assert.equal(activeVersion(kit), 2);
-  assert.deepEqual(kit.store.events, ["PROPOSED v1", "ACTIVATED v1", "PROPOSED v2", "ACTIVATED v2", "RETIRED v1"]);
+  assert.deepEqual(activeVersions(kit), [1, 2]);
+  assert.deepEqual(kit.store.events, ["PROPOSED v1", "ACTIVATED v1", "PROPOSED v2", "ACTIVATED v2"]);
+  assert.match(kit.tg.sent.at(-1)!.text, /Active rules: v1, v2 \(2 of 5\)/);
+});
+
+Deno.test("an odds-based rule says it does not reach the simulated ticket", async () => {
+  const kit = makeKit();
+  await post(kit, textMessage("/rule 3 upsets by odds"));
+  await post(kit, textMessage("YES"));
+  assert.match(kit.tg.sent.at(-1)!.text, /only to tickets from a screenshot with odds/);
+  await post(kit, textMessage("/rule 3 upsets by margin"));
+  await post(kit, textMessage("YES"));
+  assert.doesNotMatch(kit.tg.sent.at(-1)!.text, /only to tickets from a screenshot/);
+});
+
+Deno.test("at most five rules at once: the sixth is refused before anything is stored, and a repeat of an active rule is refused", async () => {
+  const kit = makeKit();
+  kit.store.active = [1, 2, 3, 4, 5].map((v) => ruleRec(v));
+  const before = kit.store.rules.length;
+  await post(kit, textMessage("/rule 7 draws"));
+  assert.match(kit.tg.sent.at(-1)!.text, /5 rules are already active \(v1, v2, v3, v4, v5\)\. Stop one first with \/retire/);
+  assert.equal(kit.store.rules.length, before);
+  assert.ok(kit.store.audits.some((a) => a.action === "RULE_PROPOSED" && a.outcome === "REFUSED" && a.detail === "all slots in use"));
+  // a pending proposal that somehow meets a full set is refused at YES too
+  kit.store.pending = ruleRec(9, { v: 1, reverse: { count: 2, basis: "margin" } });
+  await post(kit, textMessage("YES"));
+  assert.match(kit.tg.sent.at(-1)!.text, /5 rules are already active/);
+  assert.deepEqual(activeVersions(kit), [1, 2, 3, 4, 5]);
+  // a repeat of an active rule (same effect, leagues in another order and case) would only duplicate an arm
+  const dup = makeKit();
+  dup.store.active = [ruleRec(1, { v: 1, force_draws: { count: 2, basis: "draw_score" }, only_leagues: ["La Liga", "Premier League"] })];
+  await post(dup, textMessage("/rule 2 draws; only premier league, LA LIGA"));
+  assert.match(dup.tg.sent.at(-1)!.text, /same as active rule v1 \(arm B1\)/);
+  assert.equal(dup.store.rules.length, 0);
+  dup.store.pending = ruleRec(8, { v: 1, force_draws: { count: 2, basis: "draw_score" }, only_leagues: ["Premier League", "La Liga"] });
+  await post(dup, textMessage("YES"));
+  assert.match(dup.tg.sent.at(-1)!.text, /repeats one that is already active/);
+  assert.deepEqual(activeVersions(dup), [1]);
+});
+
+Deno.test("retiring a rule needs YES; NO keeps it; its picks are untouched because only the rule's status changes", async () => {
+  const kit = makeKit();
+  kit.store.active = [ruleRec(2), ruleRec(4)];
+  await post(kit, textMessage("/retire 2"));
+  assert.match(kit.tg.sent.at(-1)!.text, /Stop rule v2 \(arm B2\)/);
+  assert.match(kit.tg.sent.at(-1)!.text, /earlier picks stay and are still scored/);
+  assert.deepEqual(activeVersions(kit), [2, 4]); // asking changes nothing
+  await post(kit, textMessage("no"));
+  assert.match(kit.tg.sent.at(-1)!.text, /Kept rule v2 \(arm B2\)/);
+  assert.deepEqual(activeVersions(kit), [2, 4]);
+  await post(kit, textMessage("YES")); // the declined request cannot be revived
+  assert.deepEqual(activeVersions(kit), [2, 4]);
+  await post(kit, textMessage("/retire v4"));
+  await post(kit, textMessage("YES"));
+  assert.deepEqual(activeVersions(kit), [2]);
+  assert.match(kit.tg.sent.at(-1)!.text, /Rule v4 is retired \(arm B4\)\. Its earlier picks stay.*Active rules: v2\./);
+  assert.deepEqual(kit.store.events, ["RETIRE_REQUESTED v2", "RETIRE_DECLINED v2", "RETIRE_REQUESTED v4", "RETIRED v4"]);
+  assert.ok(kit.store.audits.some((a) => a.action === "RULE_RETIRED" && a.outcome === "OK" && a.detail === "v4"));
+  await post(kit, textMessage("/retire 2"));
+  await post(kit, textMessage("YES"));
+  assert.match(kit.tg.sent.at(-1)!.text, /No rule is active now/);
+});
+
+Deno.test("/retire is refused for an unknown rule, a missing number, or while something else waits for YES", async () => {
+  const kit = makeKit();
+  kit.store.active = [ruleRec(3)];
+  for (const bad of ["/retire", "/retire three", "/retire 3 4", "/retire 9"]) await post(kit, textMessage(bad));
+  assert.deepEqual(kit.store.events, []);
+  assert.match(kit.tg.sent[0].text, /Say which rule to stop, for example: \/retire 3\. Active rules: v3\./);
+  assert.match(kit.tg.sent[3].text, /Rule v9 is not active\. Active rules: v3\./);
+  kit.store.pending = ruleRec(6, { v: 1, reverse: { count: 2, basis: "margin" } });
+  await post(kit, textMessage("/retire 3"));
+  assert.match(kit.tg.sent.at(-1)!.text, /Answer YES or NO to what is already waiting first/);
+  assert.deepEqual(kit.store.events, []);
+  // and a proposal is refused while a retirement waits
+  const other = makeKit();
+  other.store.active = [ruleRec(3)];
+  await post(other, textMessage("/retire 3"));
+  await post(other, textMessage("/rule 4 upsets"));
+  assert.match(other.tg.sent.at(-1)!.text, /Answer YES or NO to the retirement of rule v3 first/);
+  assert.equal(other.store.rules.length, 0);
 });
 
 Deno.test("a rule that does not parse is explained and stores nothing", async () => {
@@ -429,9 +519,9 @@ Deno.test("the reply names arm B only when a rule is active", async () => {
   const withRule = makeKit();
   withRule.setVision({ fixtures: [row("Alpha", "Beta")] });
   withRule.store.fixtures = [fixture("f1", "Alpha", "Beta", KICKOFF)];
-  withRule.store.active = { rule_id: "r", version: 3, structure: { v: 1, force_draws: { count: 2, basis: "draw_score" } }, source_text: "2 draws" };
+  withRule.store.active = [ruleRec(3), ruleRec(10)];
   await post(withRule, fileMessage("photo"));
-  assert.match(withRule.tg.texts, /Computing arms A, C and B \(rule v3\)/);
+  assert.match(withRule.tg.texts, /Computing arms A, C and B3, B10 \(one per active rule\) now/);
 });
 
 Deno.test("an internal failure gives a short generic reply, an error audit, and no retry storm", async () => {
@@ -448,29 +538,74 @@ Deno.test("rules, ticket and scoreboard views", async () => {
   const kit = makeKit();
   await post(kit, textMessage("/rules"));
   assert.match(kit.tg.sent.at(-1)!.text, /No rule is active/);
-  kit.store.active = { rule_id: "r", version: 2, structure: { v: 1, reverse: { count: 4, basis: "odds_disagreement" } }, source_text: "x" };
+  kit.store.active = [
+    ruleRec(10, { v: 1, force_draws: { count: 2, basis: "draw_score" } }),
+    ruleRec(2, { v: 1, reverse: { count: 4, basis: "odds_disagreement" } }),
+  ];
   await post(kit, textMessage("/rules"));
-  assert.match(kit.tg.sent.at(-1)!.text, /Active rule v2 \(arm B\): reverse 4 picks chosen by largest model-vs-market gap/);
+  const rulesText = kit.tg.sent.at(-1)!.text;
+  assert.match(rulesText, /Active rules \(2 of 5; each is its own arm B/);
+  assert.match(rulesText, /- B2 \(rule v2\): reverse 4 picks chosen by largest model-vs-market gap/);
+  assert.ok(rulesText.indexOf("- B2 ") < rulesText.indexOf("- B10 "), "rules are listed in version order");
+  kit.store.retiring = kit.store.active.find((r) => r.version === 10) ?? null;
+  await post(kit, textMessage("/rules"));
+  assert.match(kit.tg.sent.at(-1)!.text, /Waiting for YES or NO: stop rule v10/);
+  kit.store.retiring = null;
 
   await post(kit, textMessage("/ticket"));
   assert.match(kit.tg.sent.at(-1)!.text, /No tickets for 2026-11-26/);
+  const pick = (arm: string, armVersion: string, p: string, extra = {}) =>
+    ({ home: "Alpha", away: "Beta", arm, armVersion, pick: p, adjustment: null, forced: false, ...extra });
   kit.store.tickets = [{
     kind: "SIMULATED",
     fixtureCount: 1,
     picks: [
-      { home: "Alpha", away: "Beta", arm: "A", pick: "HOME_WIN", adjustment: null, forced: false },
-      { home: "Alpha", away: "Beta", arm: "C", pick: "DRAW", adjustment: null, forced: true },
+      pick("C", "draw-score-v1", "DRAW", { forced: true }),
+      pick("B", "rule-v10", "AWAY_WIN", { adjustment: "REVERSED" }),
+      pick("A", "elo_davidson_recalibrated", "HOME_WIN"),
+      pick("B", "rule-v2", "DRAW", { adjustment: "FORCED_DRAW" }),
     ],
   }];
   await post(kit, textMessage("/ticket"));
-  assert.match(kit.tg.sent.at(-1)!.text, /Simulated ticket, 1 fixtures:\n- Alpha v Beta: A home \| C draw \(forced\)/);
+  assert.match(
+    kit.tg.sent.at(-1)!.text,
+    /Simulated ticket, 1 fixtures:\n- Alpha v Beta: A home \| B2 draw \(forced\) \| B10 away \(reversed\) \| C draw \(forced\)/,
+  );
 
   await post(kit, textMessage("/scoreboard"));
   assert.match(kit.tg.sent.at(-1)!.text, /No settled ticket picks yet/);
-  kit.store.score = [{ ticket_kind: "SIMULATED", arm: "A", tickets: 3, picks_settled: 40, picks_right: 22 }];
+});
+
+const score = (over: Record<string, unknown>) => ({
+  ticket_kind: "SIMULATED", arm: "A", arm_version: "elo_davidson_recalibrated", tickets: 3, picks_settled: 40, picks_right: 22,
+  a_right_same_fixtures: 22, c_right_same_fixtures: 20, adjusted_settled: 0, adjusted_right: 0, a_right_on_adjusted: 0, ...over,
+});
+
+Deno.test("the scoreboard shows each rule beside A and C on the same fixtures, with sample size and a margin, one message per ticket kind", async () => {
+  const kit = makeKit();
+  kit.store.score = [
+    score({ arm: "B", arm_version: "rule-v10", picks_settled: 100, picks_right: 45, a_right_same_fixtures: 41, c_right_same_fixtures: 38, adjusted_settled: 12, adjusted_right: 5, a_right_on_adjusted: 3 }),
+    score({}),
+    score({ arm: "C", arm_version: "draw-score-v1", picks_right: 18, adjusted_settled: 10, adjusted_right: 4, a_right_on_adjusted: 6 }),
+    score({ arm: "B", arm_version: "rule-v2", picks_settled: 8, picks_right: 3, a_right_same_fixtures: 3, c_right_same_fixtures: 2 }),
+    score({ ticket_kind: "SCREENSHOT", tickets: 2, picks_settled: 10, picks_right: 6, a_right_same_fixtures: 6 }),
+  ];
   await post(kit, textMessage("/scoreboard"));
-  assert.match(kit.tg.sent.at(-1)!.text, /calibration report card, not evidence of an edge/);
-  assert.match(kit.tg.sent.at(-1)!.text, /arm A: 22 of 40 right \(55\.0%\) over 3 ticket\(s\)/);
+  assert.equal(kit.tg.sent.length, 2); // Screenshot and Simulated, so five rules cannot pass Telegram's length limit
+  const [first, second] = kit.tg.sent.map((s) => s.text);
+  assert.match(first, /calibration report card, not evidence of an edge/);
+  assert.match(first, /rough 95% margin/);
+  assert.match(first, /Screenshot tickets:\n- A \(rating model\): 6 of 10 right \(60\.0%, ±31 pts\) over 2 ticket\(s\)/);
+  assert.match(first, /Only 10 settled picks: too few to read much into/);
+  assert.doesNotMatch(second, /calibration report card/);
+  assert.match(second, /Simulated tickets:\n- A \(rating model\): 22 of 40 right \(55\.0%, ±15 pts\) over 3 ticket\(s\)/);
+  // order: A, B2, B10, C
+  const order = ["- A (", "- B2 (rule v2)", "- B10 (rule v10)", "- C ("].map((s) => second.indexOf(s));
+  assert.ok(order.every((n) => n >= 0) && [...order].sort((a, b) => a - b).join() === order.join(), `order ${order}`);
+  assert.match(second, /- B10 \(rule v10\): 45 of 100 right \(45\.0%, ±10 pts\) over 3 ticket\(s\)\n {2}Same fixtures: A 41 right, C 38 right\n {2}Where it differs from A by design: 12 settled, it was right 5 times and A 3/);
+  assert.match(second, /- C \(draw-score-v1\): 18 of 40 right \(45\.0%, ±15 pts\) over 3 ticket\(s\)\n {2}Same fixtures: A 22 right\n {2}Where it differs from A by design: 10 settled, it was right 4 times and A 6/);
+  assert.match(second, /- B2 \(rule v2\): 3 of 8 right[^\n]*\n {2}Same fixtures: A 3 right, C 2 right\n {2}It has not differed from A on a settled pick yet\n {2}Only 8 settled picks: too few/);
+  assert.ok(second.length < 4000 && first.length < 4000);
 });
 
 Deno.test("unknown text and unknown commands get a pointer to /help and cost no vision call", async () => {

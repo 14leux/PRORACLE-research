@@ -91,15 +91,57 @@ Deno.test("a read is stored as parsed values only, row by row, with the matched 
   ]);
 });
 
-Deno.test("rule events are appended in order and a new activation retires the old rule", async () => {
-  const { fn, seen } = recorder(json([{ version: 4 }]), json([{ id: "rule-5" }]), json(null), json(null), json(null));
+Deno.test("rule events are appended in order and an activation touches no other rule", async () => {
+  const { fn, seen } = recorder(json([{ version: 4 }]), json([{ id: "rule-5" }]), json(null), json(null));
   const store = new PostgrestStore("https://p.example", KEY, fn);
   const rule = await store.proposeRule({ v: 1, force_draws: { count: 5, basis: "draw_score" } }, "5 draws", 12);
   assert.equal(rule.version, 5);
   assert.deepEqual(seen[2].body, { rule_id: "rule-5", event: "PROPOSED", update_id: 12 });
-  await store.activateRule(rule, { rule_id: "rule-4", version: 4, structure: { v: 1 }, source_text: "" }, 13);
+  await store.activateRule(rule, 13);
+  assert.equal(seen.length, 4); // exactly one request: no earlier rule is retired
   assert.deepEqual(seen[3].body, { rule_id: "rule-5", event: "ACTIVATED", update_id: 13 });
-  assert.deepEqual(seen[4].body, { rule_id: "rule-4", event: "RETIRED", update_id: 13 });
+});
+
+Deno.test("retirement is asked, confirmed or declined through its own events, one request each", async () => {
+  const { fn, seen } = recorder(json(null), json(null), json(null));
+  const store = new PostgrestStore("https://p.example", KEY, fn);
+  const rule = { rule_id: "rule-3", version: 3, structure: { v: 1 as const }, source_text: "x" };
+  await store.requestRetirement(rule, 20);
+  await store.confirmRetirement(rule, 21);
+  await store.declineRetirement(rule, 22);
+  assert.deepEqual(seen.map((s) => s.body), [
+    { rule_id: "rule-3", event: "RETIRE_REQUESTED", update_id: 20 },
+    { rule_id: "rule-3", event: "RETIRED", update_id: 21 },
+    { rule_id: "rule-3", event: "RETIRE_DECLINED", update_id: 22 },
+  ]);
+  for (const s of seen) {
+    assert.equal(s.method, "POST");
+    assert.equal(new URL(s.url).pathname, "/rest/v1/intake_rule_events");
+  }
+});
+
+Deno.test("every active rule is read from the plural view, oldest first, and the pending retirement from its own view", async () => {
+  const rules = [{ rule_id: "a", version: 2, structure: { v: 1 }, source_text: "x" }, { rule_id: "b", version: 4, structure: { v: 1 }, source_text: "y" }];
+  const { fn, seen } = recorder(json(rules), json([]), json([rules[1]]), json([]));
+  const store = new PostgrestStore("https://p.example", KEY, fn);
+  assert.deepEqual((await store.activeRules()).map((r) => r.version), [2, 4]);
+  assert.deepEqual(await store.activeRules(), []);
+  assert.equal((await store.pendingRetirement())?.version, 4);
+  assert.equal(await store.pendingRetirement(), null);
+  assert.equal(new URL(seen[0].url).pathname, "/rest/v1/intake_active_rules");
+  assert.equal(new URL(seen[0].url).searchParams.get("order"), "version.asc");
+  assert.equal(new URL(seen[2].url).pathname, "/rest/v1/intake_pending_retirement");
+  assert.ok(seen.every((s) => s.method === "GET"));
+});
+
+Deno.test("the scoreboard is read from the per-rule view and ticket picks carry their arm version", async () => {
+  const { fn, seen } = recorder(json([]), json([{ id: "t1", ticket_kind: "SIMULATED", fixture_count: 1 }]), json([{ ticket_id: "t1", fixture_id: "f1", arm: "B", arm_version: "rule-v3", pick: "DRAW", adjustment: "FORCED_DRAW", forced: false }]), json([{ id: "f1", home_team: "A", away_team: "B" }]));
+  const store = new PostgrestStore("https://p.example", KEY, fn);
+  await store.scoreboard();
+  assert.equal(new URL(seen[0].url).pathname, "/rest/v1/intake_scoreboard");
+  const [t] = await store.ticketsForDate("2026-11-26");
+  assert.equal(t.picks[0].armVersion, "rule-v3");
+  assert.ok(new URL(seen[2].url).searchParams.get("select")!.includes("arm_version"));
 });
 
 Deno.test("a failed request is a StoreError without the response body, URL or key", async () => {
