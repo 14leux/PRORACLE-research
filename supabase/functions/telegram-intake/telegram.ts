@@ -7,6 +7,13 @@ export interface TelegramApi {
   send(chatId: string, text: string): Promise<void>;
   /** The file's bytes, or null when it is larger than `maxBytes`. */
   download(fileId: string, maxBytes: number): Promise<Uint8Array | null>;
+  /** Makes Telegram's command menu equal `menu`; calls setMyCommands only when it differs. */
+  syncMenu(menu: readonly MenuEntry[]): Promise<"UNCHANGED" | "UPDATED">;
+}
+
+export interface MenuEntry {
+  readonly command: string;
+  readonly description: string;
 }
 
 export class TelegramError extends Error {
@@ -42,6 +49,19 @@ export class TelegramHttp implements TelegramApi {
   async send(chatId: string, text: string): Promise<void> {
     const clipped = text.length > MAX_MESSAGE_CHARS ? text.slice(0, MAX_MESSAGE_CHARS - 1) + "…" : text;
     await this.call("sendMessage", { chat_id: chatId, text: clipped, disable_web_page_preview: true });
+  }
+
+  async syncMenu(menu: readonly MenuEntry[]): Promise<"UNCHANGED" | "UPDATED"> {
+    const current = (await this.call("getMyCommands", {})) as { ok?: boolean; result?: unknown };
+    const key = (c: { command?: unknown; description?: unknown }) => `${c.command}\n${c.description}`;
+    if (current.ok === true && Array.isArray(current.result)) {
+      const have = (current.result as { command?: unknown; description?: unknown }[]).map(key);
+      const want = menu.map(key);
+      if (have.length === want.length && have.every((v, i) => v === want[i])) return "UNCHANGED";
+    }
+    const done = (await this.call("setMyCommands", { commands: menu })) as { ok?: boolean };
+    if (done.ok !== true) throw new TelegramError();
+    return "UPDATED";
   }
 
   async download(fileId: string, maxBytes: number): Promise<Uint8Array | null> {
