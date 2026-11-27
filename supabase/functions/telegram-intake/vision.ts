@@ -20,6 +20,11 @@ export interface ParsedRow {
   home_odds: number | null;
   draw_odds: number | null;
   away_odds: number | null;
+  /** The country or region label when the page prints one (a hint for matching; not stored yet). */
+  country?: string | null;
+  /** The final score, when the page shows the game as finished and both numbers are valid. */
+  home_score?: number | null;
+  away_score?: number | null;
 }
 
 export interface ParsedTicket {
@@ -53,6 +58,7 @@ async function failureReason(response: Response): Promise<string> {
 
 const TEAM_NAME = /^[\p{L}\p{N}][\p{L}\p{N} .'&\-/()]*$/u;
 const BOOKMAKER = /^[\p{L}\p{N}][\p{L}\p{N} .\-]*$/u;
+const COUNTRY = /^\p{L}[\p{L} .'\-()]*$/u;
 const MAX_ROWS_COUNTED = 500;
 
 export const VISION_TOOL = {
@@ -76,6 +82,9 @@ export const VISION_TOOL = {
             home_odds: { type: "number", description: "Decimal odds for a home win (1X2 market)" },
             draw_odds: { type: "number", description: "Decimal odds for a draw" },
             away_odds: { type: "number", description: "Decimal odds for an away win" },
+            country: { type: "string", maxLength: 40, description: "Country or region label printed for the fixture, if any" },
+            home_score: { type: "integer", minimum: 0, maximum: 99, description: "Home goals, only for a game shown as finished" },
+            away_score: { type: "integer", minimum: 0, maximum: 99, description: "Away goals, only for a game shown as finished" },
           },
           required: ["home_team", "away_team"],
         },
@@ -93,6 +102,10 @@ export function systemPrompt(today: string): string {
     "Always answer by calling record_fixtures exactly once (with an empty list if no fixtures are visible); never reply in plain text.",
     "List only fixtures that are visibly shown, in the order shown. Never invent fixtures, dates or odds.",
     "Give 1X2 decimal odds only when the three prices for a fixture are all visible; otherwise omit odds.",
+    "On an odds listing a small market counter (for example 16, 23 or 25) is often printed after the away team or on its own line:",
+    "it counts extra markets and is not part of the team name, so leave it out. Keep digits that belong to a real team name,",
+    "such as Stade Brest 29 or Ascoli Calcio 1898.",
+    "Also record the country or region label when one is printed for a fixture, and the final score only when the game is shown as finished.",
     `Today's date is ${today}; use it to resolve words such as Today or Tomorrow. Copy times as printed.`,
   ].join(" ");
 }
@@ -126,6 +139,11 @@ function cleanName(value: unknown, pattern: RegExp, max: number): string | null 
   if (typeof value !== "string") return null;
   const name = value.normalize("NFC").replace(/\s+/g, " ").trim();
   return name.length >= 1 && name.length <= max && pattern.test(name) ? name : null;
+}
+
+/** A final score is kept only as a whole number from 0 to 99; anything else is dropped. */
+function goals(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 99 ? value : null;
 }
 
 function odds(value: unknown): number | null {
@@ -165,6 +183,9 @@ export function parseVisionOutput(raw: unknown, ctx: { today: string; utcOffsetM
     if (home === null || away === null || home.toLowerCase() === away.toLowerCase()) continue;
     const prices = [odds(row.home_odds), odds(row.draw_odds), odds(row.away_odds)];
     const complete = prices.every((p) => p !== null);
+    const homeScore = goals(row.home_score);
+    const awayScore = goals(row.away_score);
+    const scored = homeScore !== null && awayScore !== null; // one number alone says nothing
     rows.push({
       home_team: home,
       away_team: away,
@@ -172,6 +193,9 @@ export function parseVisionOutput(raw: unknown, ctx: { today: string; utcOffsetM
       home_odds: complete ? prices[0] : null,
       draw_odds: complete ? prices[1] : null,
       away_odds: complete ? prices[2] : null,
+      country: cleanName(row.country, COUNTRY, 40),
+      home_score: scored ? homeScore : null,
+      away_score: scored ? awayScore : null,
     });
     if (rows.length >= MAX_FIXTURES) break;
   }

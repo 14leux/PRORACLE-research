@@ -5,6 +5,7 @@
 // supabase/config.toml and the Telegram secret-token header is the authentication.
 
 import { handleRequest, type Deps } from "./handler.ts";
+import { anchorEnabled } from "./matching.ts";
 import { PostgrestStore } from "./store.ts";
 import { TelegramHttp } from "./telegram.ts";
 import { buildVisionRequest, callVision } from "./vision.ts";
@@ -33,6 +34,8 @@ function configure(): Deps | null {
     dailyCap: intEnv("INTAKE_DAILY_CALL_CAP", 10, 1, 100),
     model: need("VISION_MODEL") || "claude-sonnet-5-5",
     utcOffsetMinutes: intEnv("INTAKE_UTC_OFFSET_MINUTES", 180, -720, 840),
+    // On unless INTAKE_ANCHOR_MATCHING says off: a missing or odd value never switches matching off.
+    anchorMatching: anchorEnabled(Deno.env.get("INTAKE_ANCHOR_MATCHING")),
     store: new PostgrestStore(supabaseUrl, serviceKey),
     telegram: new TelegramHttp(botToken),
     vision: (body: ReturnType<typeof buildVisionRequest>) => callVision(fetch, anthropicKey, body),
