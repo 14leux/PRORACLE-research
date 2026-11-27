@@ -122,3 +122,5 @@ deno test --no-prompt --no-remote supabase/functions/telegram-intake/
 ```
 
 The Python side is covered by `tests/test_ticket_mode.py`. To prove the migration on a disposable local database, follow [DATABASE.md](DATABASE.md) and run `supabase/tests/verify_intake.sql` and `supabase/tests/verify_multi_rule.sql` with `psql` inside the local database container; `supabase/tests/intake_catalog_fingerprint.sql` run before and after re-applying the migration must give identical output.
+
+The tickets-and-slates migration (`20261129000000_proracle_ticket_slate.sql`) is proved the same way with `supabase/tests/verify_ticket_slate.sql` and `supabase/tests/ticket_slate_catalog_fingerprint.sql`. It only adds: nothing the deployed function or the workflows read is removed, and it is safe to apply before the code that uses it. Its rollback, `supabase/tests/rollback_ticket_slate.sql`, removes only what it added, refuses to run if that would delete stored data (unless `-v allow_data_loss=1`), and must be tried on a database copy first. Apply the migration to production first, then merge, then redeploy.
