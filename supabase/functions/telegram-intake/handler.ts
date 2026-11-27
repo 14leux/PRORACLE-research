@@ -2,7 +2,18 @@
 // (one private chat only), retry deduplication, then the command. Every dependency is injected, so
 // the tests run with fakes and no network.
 
-import { ALLOWED_MEDIA, buildVisionRequest, parseVisionOutput, type ParsedRow, type ParsedTicket, VisionError } from "./vision.ts";
+import {
+  ALLOWED_MEDIA,
+  buildVisionRequest,
+  parseVisionOutput,
+  type ParsedRow,
+  type ParsedTicket,
+  type RejectedRow,
+  type RejectReason,
+  type TokenUsage,
+  VisionError,
+  type VisionResult,
+} from "./vision.ts";
 import {
   COMMANDS,
   helpText,
@@ -12,24 +23,28 @@ import {
   MAX_RULE_TEXT_CHARS,
   MENU,
   PENDING_RULE_MINUTES,
+  PENDING_UPLOAD_MINUTES,
+  SLATE_MAX_ROWS,
 } from "./commands.ts";
 import { buildAliases, MATCH_WINDOW_MS, matchRows, type MatchedRow, seedAliases } from "./matching.ts";
 import { canonicalRule, describeRule, parseRule } from "./rules.ts";
-import type { AuditAction, AuditOutcome, IntakeStore, RuleRecord, ScoreRow, UpdateKind } from "./store.ts";
-import { TelegramError, type TelegramApi } from "./telegram.ts";
+import type { AuditAction, AuditOutcome, DayUsage, IntakeStore, ReadKind, RuleRecord, ScoreRow, StoredRead, UpdateKind } from "./store.ts";
+import { splitMessage, TelegramError, type TelegramApi } from "./telegram.ts";
 
 export interface Deps {
   secretToken: string;
   allowedChatId: string;
   dailyCap: number;
+  /** Vision tokens (input plus output) per UTC day before new reads are refused; next to the call cap. */
+  dailyTokenBudget: number;
   model: string;
   utcOffsetMinutes: number;
   /** The one-team match (matching.ts, ANCHOR); on in production unless INTAKE_ANCHOR_MATCHING says off. */
   anchorMatching: boolean;
   store: IntakeStore;
   telegram: TelegramApi;
-  /** One vision call: request body in, the forced tool's input out. */
-  vision: (body: ReturnType<typeof buildVisionRequest>) => Promise<unknown>;
+  /** One vision call: request body in, the forced tool's input and the tokens it used out. */
+  vision: (body: ReturnType<typeof buildVisionRequest>) => Promise<VisionResult>;
   /** Starts the Python workflow for a stored intake; false when it could not be started. */
   dispatch: (intakeId: string) => Promise<boolean>;
   now: () => Date;
@@ -48,6 +63,8 @@ interface TgMessage {
   chat: { id: number; type: string };
   from?: { id: number };
   text?: string;
+  /** The caption Telegram sends with a photo or file: where the ticket or slate marker goes. */
+  caption?: string;
   photo?: TgPhoto[];
   document?: TgDocument;
 }
@@ -79,6 +96,30 @@ function toBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
   return btoa(binary);
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as BufferSource));
+  return [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The media type from the file's first bytes, for an upload kept only as a Telegram file id (no declared type). */
+function mediaTypeOf(type: "IMAGE" | "PDF", bytes: Uint8Array): string {
+  const starts = (...b: number[]) => b.every((v, i) => bytes[i] === v);
+  if (type === "PDF") return "application/pdf";
+  if (starts(0x89, 0x50, 0x4e, 0x47)) return "image/png";
+  if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return "image/webp";
+  }
+  return "image/jpeg";
+}
+
+/** "ticket" or "slate" as a whole word in the caption; both words, or neither, means ask. */
+export function captionKind(caption: string | undefined): ReadKind | null {
+  const words = new Set((caption ?? "").toLowerCase().match(/[a-z]+/g) ?? []);
+  const ticket = words.has("ticket");
+  const slate = words.has("slate");
+  return ticket === slate ? null : ticket ? "TICKET" : "SLATE";
 }
 
 const LABEL = { HOME_WIN: "home", DRAW: "draw", AWAY_WIN: "away" } as Record<string, string>;
@@ -119,7 +160,7 @@ interface Ctx {
 
 const help: Route = async (c) => {
   await c.audit("HELP", "OK");
-  await c.reply(helpText(c.deps.dailyCap));
+  await c.reply(helpText(c.deps.dailyCap, c.deps.dailyTokenBudget));
 };
 
 const proposeRule: Route = async (c) => {
@@ -263,10 +304,10 @@ const rules: Route = async (c) => {
   await c.reply(lines.join("\n"));
 };
 
-const ticket: Route = async (c) => {
+const today: Route = async (c) => {
   const today = c.deps.now().toISOString().slice(0, 10);
   const tickets = await c.deps.store.ticketsForDate(today);
-  await c.audit("VIEW", "OK", "ticket");
+  await c.audit("VIEW", "OK", "today");
   if (tickets.length === 0) return c.reply(`No tickets for ${today} (UTC) yet.`);
   const out: string[] = [];
   for (const t of tickets) {
@@ -326,21 +367,36 @@ const scoreboard: Route = async (c) => {
   }
 };
 
-function fileOf(message: TgMessage): { fileId: string; mime: string; size: number | null } | "UNSUPPORTED" | null {
+interface FileRef {
+  fileId: string;
+  /** The declared media type; null for an upload kept as a file id only (the type is then read from the bytes). */
+  mime: string | null;
+  type: "IMAGE" | "PDF";
+  size: number | null;
+}
+
+function fileOf(message: TgMessage): FileRef | "UNSUPPORTED" | null {
   if (message.photo && message.photo.length > 0) {
     const biggest = message.photo[message.photo.length - 1];
-    return { fileId: biggest.file_id, mime: "image/jpeg", size: biggest.file_size ?? null };
+    return { fileId: biggest.file_id, mime: "image/jpeg", type: "IMAGE", size: biggest.file_size ?? null };
   }
   if (message.document) {
     const mime = message.document.mime_type ?? "";
     if (!ALLOWED_MEDIA.has(mime)) return "UNSUPPORTED";
-    return { fileId: message.document.file_id, mime, size: message.document.file_size ?? null };
+    return {
+      fileId: message.document.file_id,
+      mime,
+      type: mime === "application/pdf" ? "PDF" : "IMAGE",
+      size: message.document.file_size ?? null,
+    };
   }
   return null;
 }
 
+const tooLarge = `That file is larger than ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MB. Send a smaller one.`;
+
+/** A file arrives: with ticket or slate in the caption it is read as that; without one the bot asks and reads nothing. */
 const ticketFile: Route = async (c) => {
-  const { deps, updateId } = c;
   const file = fileOf(c.message);
   if (file === null || file === "UNSUPPORTED") {
     await c.audit("BAD_INPUT", "REFUSED", "unsupported file");
@@ -348,37 +404,148 @@ const ticketFile: Route = async (c) => {
   }
   if (file.size !== null && file.size > MAX_FILE_BYTES) {
     await c.audit("BAD_INPUT", "REFUSED", "file too large");
-    return c.reply(`That file is larger than ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MB. Send a smaller one.`);
+    return c.reply(tooLarge);
   }
-  const now = deps.now();
-  const today = now.toISOString().slice(0, 10);
-  if (!(await deps.store.reserveCall(today, deps.dailyCap))) {
-    await c.audit("CAP_REACHED", "REFUSED", `cap=${deps.dailyCap}`);
-    return c.reply(`The daily limit of ${deps.dailyCap} screenshot reads is used up. It resets at 00:00 UTC.`);
+  const kind = captionKind(c.message.caption);
+  if (kind !== null) return await readAndStore(c, file, kind, null);
+  // No marker: keep only the Telegram file id (60 minutes, the latest upload only) and ask. Nothing is
+  // downloaded, read or counted against today's limits until the answer.
+  await c.deps.store.savePending({ updateId: c.updateId, fileId: file.fileId, fileType: file.type, fileSize: file.size });
+  await c.audit("PENDING", "OK", `type=${file.type}`);
+  await c.reply(
+    "Is this a ticket or a slate?\n" +
+      `- Ticket: a slip you declared, up to ${MAX_FIXTURES} rows. I match it, freeze arms A, B and C before kickoff and review it after the games.\n` +
+      `- Slate: any size, up to ${SLATE_MAX_ROWS} rows. I match and store it for testing models; nothing is frozen and it stays off the scoreboard.\n` +
+      `Reply /ticket or /slate within ${PENDING_UPLOAD_MINUTES} minutes. Only your latest upload is kept, and only its Telegram file id. ` +
+      "Nothing has been read or counted against today's limits yet. Next time put the word ticket or slate in the caption and I will not ask.",
+  );
+};
+
+/** /ticket and /slate: the answer to the question above, or a request to send the file first. */
+const answerKind = (kind: ReadKind): Route => async (c) => {
+  const pending = await c.deps.store.latestPending();
+  // The database view already hides an expired upload; the clock is checked here too, so an expired one never gets read.
+  if (pending === null || Date.parse(pending.expiresAt) <= c.deps.now().getTime()) {
+    await c.audit("PENDING", "REFUSED", "nothing pending");
+    return c.reply(
+      "No upload is waiting (or the one I asked about expired after " + PENDING_UPLOAD_MINUTES + " minutes). " +
+        `Send the photo, image file or PDF first, then answer /ticket or /slate, or put the word ${kind === "SLATE" ? "slate" : "ticket"} in its caption. ` +
+        "Today's tickets are under /today.",
+    );
   }
+  await readAndStore(c, { fileId: pending.fileId, mime: null, type: pending.fileType, size: pending.fileSize }, kind, pending.id);
+};
+
+const REJECT_TEXT: Record<RejectReason, string> = {
+  NOT_A_FIXTURE: "not a fixture",
+  MISSING_TEAM: "a team name was missing or unreadable",
+  SAME_TEAM: "the same team on both sides",
+  OVER_LIMIT: `past the ${SLATE_MAX_ROWS}-row limit`,
+};
+
+function describeRejected(r: RejectedRow): string {
+  const names = r.home !== null || r.away !== null ? `${r.home ?? "?"} v ${r.away ?? "?"}: ` : "";
+  return `- row ${r.position}: ${names}${REJECT_TEXT[r.reason]}`;
+}
+
+/** Writes to the audit log without letting a logging failure stop the work it describes. */
+async function softAudit(c: Ctx, action: AuditAction, outcome: AuditOutcome, detail: string): Promise<void> {
+  try {
+    await c.audit(action, outcome, detail);
+  } catch {
+    /* the audit write itself failed: nothing more to do */
+  }
+}
+
+/** Reads one file as a ticket or a slate, matches it, stores it and replies. Shared by a caption marker and the answer command. */
+async function readAndStore(c: Ctx, file: FileRef, kind: ReadKind, pendingUploadId: string | null): Promise<void> {
+  const { deps, updateId } = c;
+  const act: AuditAction = kind === "SLATE" ? "SLATE" : "TICKET";
+  const today = deps.now().toISOString().slice(0, 10);
+
   const bytes = await deps.telegram.download(file.fileId, MAX_FILE_BYTES);
   if (bytes === null) {
     await c.audit("BAD_INPUT", "REFUSED", "file too large");
-    return c.reply(`That file is larger than ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MB. Send a smaller one.`);
+    return c.reply(tooLarge);
+  }
+  const sha = await sha256Hex(bytes);
+
+  // The same bytes as an earlier read: use what was stored from it. No vision call, no cap, no tokens, so
+  // this is looked at before the day's limits (a repeat of a file already read is allowed on a used-up day).
+  let earlier: StoredRead | null = null;
+  try {
+    earlier = await deps.store.findRead(sha);
+  } catch {
+    await softAudit(c, "ERROR", "ERROR", "file hash lookup failed");
   }
 
   let parsed: ParsedTicket;
-  try {
-    const raw = await deps.vision(buildVisionRequest({ model: deps.model, mediaType: file.mime, base64: toBase64(bytes), today }));
-    parsed = parseVisionOutput(raw, { today, utcOffsetMinutes: deps.utcOffsetMinutes });
-  } catch (error) {
-    const code = error instanceof VisionError ? error.code : "ERROR";
-    const reason = error instanceof VisionError && error.reason ? ` ${error.reason}` : "";
-    await c.audit("TICKET", "ERROR", `vision ${code}${reason}`.slice(0, 200));
-    return c.reply(
-      code === "BAD_RESPONSE" || code === "ERROR"
-        ? "I could not read that file this time. Nothing was stored. Try again with a clearer image."
-        : "The reading service did not accept or answer that request, so nothing was read or stored. This is not about the file's content; the cause is in the audit log.",
-    );
+  let tokens: TokenUsage | null = null;
+  if (earlier !== null) {
+    parsed = { bookmaker: earlier.bookmaker, rowsRead: earlier.rowsRead, rows: earlier.rows, rejected: earlier.rejected };
+    await c.audit("REUSED", "OK", `kind=${kind} rows=${earlier.rows.length}`);
+  } else {
+    // Today's limits, before anything is spent. If the usage look fails the call cap still holds through
+    // reserveCall (atomic), so a failure here never blocks a read.
+    let usage: DayUsage | null = null;
+    try {
+      usage = await deps.store.usageToday(today);
+    } catch {
+      await softAudit(c, "ERROR", "ERROR", "usage unreadable");
+    }
+    if (usage !== null && usage.tokens >= deps.dailyTokenBudget) {
+      await c.audit("TOKEN_CAP", "REFUSED", `budget=${deps.dailyTokenBudget}`);
+      return c.reply(
+        `The daily reading budget of ${deps.dailyTokenBudget.toLocaleString("en-US")} tokens is used up, so I did not read this. It resets at 00:00 UTC.`,
+      );
+    }
+    if (usage !== null && usage.calls >= deps.dailyCap) {
+      await c.audit("CAP_REACHED", "REFUSED", `cap=${deps.dailyCap}`);
+      return c.reply(`The daily limit of ${deps.dailyCap} screenshot reads is used up. It resets at 00:00 UTC.`);
+    }
+    if (!(await deps.store.reserveCall(today, deps.dailyCap))) {
+      await c.audit("CAP_REACHED", "REFUSED", `cap=${deps.dailyCap}`);
+      return c.reply(`The daily limit of ${deps.dailyCap} screenshot reads is used up. It resets at 00:00 UTC.`);
+    }
+    // A read can take a while: say so first, so the chat is not silent.
+    await c.reply("Reading it now. This can take up to a minute.");
+    try {
+      const result = await deps.vision(
+        buildVisionRequest({ model: deps.model, mediaType: file.mime ?? mediaTypeOf(file.type, bytes), base64: toBase64(bytes), today }),
+      );
+      tokens = result.usage;
+      if (tokens !== null) {
+        // The tokens were spent whether or not the answer turns out usable, so they count against the budget first.
+        try {
+          await deps.store.addTokens(today, tokens.input, tokens.output);
+        } catch {
+          await softAudit(c, "ERROR", "ERROR", "token total not saved");
+        }
+      }
+      parsed = parseVisionOutput(result.output, { today, utcOffsetMinutes: deps.utcOffsetMinutes });
+    } catch (error) {
+      const code = error instanceof VisionError ? error.code : "ERROR";
+      const reason = error instanceof VisionError && error.reason ? ` ${error.reason}` : "";
+      await c.audit(act, "ERROR", `vision ${code}${reason}`.slice(0, 200));
+      return c.reply(
+        code === "BAD_RESPONSE" || code === "ERROR"
+          ? "I could not read that file this time. Nothing was stored. Try again with a clearer image."
+          : "The reading service did not accept or answer that request, so nothing was read or stored. This is not about the file's content; the cause is in the audit log.",
+      );
+    }
   }
   if (parsed.rows.length === 0) {
-    await c.audit("TICKET", "REFUSED", "no fixtures read");
+    await c.audit(act, "REFUSED", "no fixtures read");
     return c.reply("I could not find any fixtures in that file. Nothing was stored.");
+  }
+  if (kind === "TICKET" && parsed.rows.length > MAX_FIXTURES) {
+    await c.audit(act, "REFUSED", `over ${MAX_FIXTURES} rows (${parsed.rows.length})`);
+    return c.reply(
+      `That file has ${parsed.rows.length} fixtures and a ticket holds at most ${MAX_FIXTURES}. I did not cut it and nothing was stored. ` +
+        (pendingUploadId !== null
+          ? `If it is a longer list for testing models, answer /slate (the upload is still waiting for ${PENDING_UPLOAD_MINUTES} minutes from when you sent it).`
+          : "If it is a longer list for testing models, send it again with the word slate in the caption."),
+    );
   }
 
   const kicks = parsed.rows.map((r) => (r.kickoff_at ? Date.parse(r.kickoff_at) : NaN)).filter((n) => !Number.isNaN(n));
@@ -395,11 +562,7 @@ const ticketFile: Route = async (c) => {
     aliases = buildAliases(await deps.store.matchedHistory());
   } catch {
     // no memory this time; leave a trace so a broken lookup is not silent
-    try {
-      await c.audit("ERROR", "ERROR", "matching memory unreadable");
-    } catch {
-      /* the audit write itself failed: nothing more to do */
-    }
+    await softAudit(c, "ERROR", "ERROR", "matching memory unreadable");
   }
   const matched: MatchedRow[] = matchRows(parsed.rows, stored, aliases, { anchor: deps.anchorMatching });
   const hits = matched.filter((m) => m.fixtureId !== null).length;
@@ -409,8 +572,13 @@ const ticketFile: Route = async (c) => {
   const intakeId = await deps.store.saveIntake(
     {
       updateId,
+      kind,
+      inputTokens: tokens?.input ?? null,
+      outputTokens: tokens?.output ?? null,
+      pendingUploadId,
+      fileSha256: sha,
       ticketDate: today,
-      sourceKind: file.mime === "application/pdf" ? "PDF" : "IMAGE",
+      sourceKind: file.type === "PDF" ? "PDF" : "IMAGE",
       bookmaker: parsed.bookmaker,
       model: deps.model,
       rowsRead: parsed.rowsRead,
@@ -418,32 +586,45 @@ const ticketFile: Route = async (c) => {
       rowsMatched: hits,
     },
     matched,
+    parsed.rejected,
   );
   await c.audit(
-    "TICKET",
+    act,
     "OK",
     `read=${parsed.rowsRead} kept=${parsed.rows.length} matched=${hits} remembered=${remembered} similar=${byName.length}` +
       (byOneTeam.length > 0 ? ` oneteam=${byOneTeam.length}` : ""),
   );
 
-  const lines = [`Read ${parsed.rowsRead} row(s); using ${parsed.rows.length}. Matched ${hits}, unmatched ${matched.length - hits}.`];
-  if (parsed.rowsRead > MAX_FIXTURES) lines.push(`Only the first ${MAX_FIXTURES} valid rows are used.`);
+  // The reply: every row read, then the rows that were rejected with their reasons, then how the matching went.
+  const lines = [
+    `${kind === "SLATE" ? "Slate: read" : "Read"} ${parsed.rowsRead} row(s); using ${parsed.rows.length}. Matched ${hits}, unmatched ${matched.length - hits}.`,
+  ];
+  if (earlier !== null) {
+    lines.push("I read this exact file before, so I reused that read: no new reading, and nothing counted against today's limits.");
+  }
+  lines.push(`Rows read (${matched.length}):`);
+  for (const [i, m] of matched.entries()) lines.push(`${i + 1}. ${describeRow(m.row)}`);
+  if (parsed.rejected.length > 0) {
+    lines.push(`Rejected rows, not used (${parsed.rejected.length}):`);
+    for (const r of parsed.rejected) lines.push(describeRejected(r));
+  }
   if (remembered > 0) lines.push(`${remembered} matched through names I knew (remembered from earlier tickets, or on my built-in list).`);
   if (byName.length > 0) {
     lines.push("Matched by name similarity (check these; I will remember them for next time):");
-    for (const m of byName.slice(0, 10)) lines.push(`- ${describeRow(m.row)} = ${m.matchedTo}`);
-    if (byName.length > 10) lines.push(`- and ${byName.length - 10} more`);
+    for (const m of byName) lines.push(`- ${describeRow(m.row)} = ${m.matchedTo}`);
   }
   if (byOneTeam.length > 0) {
     lines.push("Matched by one team and kickoff (check these; I will remember them for next time):");
-    for (const m of byOneTeam.slice(0, 10)) lines.push(`- ${describeRow(m.row)} = ${m.matchedTo}`);
-    if (byOneTeam.length > 10) lines.push(`- and ${byOneTeam.length - 10} more`);
+    for (const m of byOneTeam) lines.push(`- ${describeRow(m.row)} = ${m.matchedTo}`);
   }
   const missing = matched.filter((m) => m.fixtureId === null);
   if (missing.length > 0) {
     lines.push("Not matched (not used):");
-    for (const m of missing.slice(0, 10)) lines.push(`- ${describeRow(m.row)} (${reasonText(m.reason)})`);
-    if (missing.length > 10) lines.push(`- and ${missing.length - 10} more`);
+    for (const m of missing) lines.push(`- ${describeRow(m.row)} (${reasonText(m.reason)})`);
+  }
+  if (kind === "SLATE") {
+    lines.push("Stored as a slate for testing models. Nothing is frozen, no picks are made, and it stays off the scoreboard.");
+    return c.reply(lines.join("\n"));
   }
   if (hits === 0) {
     lines.push("Nothing to compute: no row matched a stored fixture.");
@@ -460,7 +641,7 @@ const ticketFile: Route = async (c) => {
       : "I saved the read but could not start the computation. Nothing was frozen.",
   );
   await c.reply(lines.join("\n"));
-};
+}
 
 function describeRow(row: ParsedRow): string {
   return `${row.home_team} v ${row.away_team}`;
@@ -482,7 +663,9 @@ export const ROUTES: Record<string, Route> = {
   yes,
   no,
   rules,
-  ticket,
+  ticket: answerKind("TICKET"),
+  slate: answerKind("SLATE"),
+  today,
   scoreboard,
   help,
 };
@@ -547,7 +730,10 @@ export async function handleRequest(request: Request, deps: Deps): Promise<Respo
     updateId: update.update_id,
     chatId,
     message,
-    reply: (body) => deps.telegram.send(chatId, body),
+    // A reply longer than Telegram's limit goes out as several messages, in order, never cut.
+    reply: async (body) => {
+      for (const part of splitMessage(body)) await deps.telegram.send(chatId, part);
+    },
     audit: (action, outcome, detail) => deps.store.audit(action, outcome, detail ?? null, update.update_id),
   };
   try {

@@ -10,9 +10,9 @@ New to it? [USER_MANUAL.html](USER_MANUAL.html) is a picture-first walk-through 
 
 1. Telegram calls your Edge Function `telegram-intake` (a webhook).
 2. The function checks the secret-token header in constant time, then that the message comes from your private chat only. Anything else is ignored and logged without its content.
-3. For a photo, an image file or a PDF it takes one of today's vision calls (a daily cap), reads the file in memory with one call to the Anthropic API (the model is told to call a single tool; any other reply is discarded), and validates the result in code: at most 20 fixtures, strict field checks, odds only when all three prices are valid. The reading prompt tells the model to leave out the small market counter some odds listings print after the away team (16, 23 or 25 seen) but to keep digits that belong to a real name (`Stade Brest 29`), and to read the country label and, for finished games, the final score when they are printed; the country and score are validated and used as hints only for now (not stored).
+3. For a photo, an image file or a PDF the caption decides what it is: the word `ticket` or `slate` reads it as that. With no marker (or both words) it asks "ticket or slate?" and does nothing else: nothing is downloaded, read or counted against a daily limit until you answer `/ticket` or `/slate` (see [Tickets and slates](#tickets-and-slates)). A read then takes one of today's vision calls (a daily cap, and a daily token budget beside it), reads the file in memory with one call to the Anthropic API (the model is told to call a single tool; any other reply is discarded), and validates the result in code: strict field checks, odds only when all three prices are valid. Rows it cannot use are not dropped silently: each is stored as a rejected row with a fixed reason (not a fixture, a team name missing or unreadable, the same team on both sides, or past the 100-row limit). The reading prompt tells the model to leave out the small market counter some odds listings print after the away team (16, 23 or 25 seen) but to keep digits that belong to a real name (`Stade Brest 29`), and to read the country label and, for finished games, the final score when they are printed; the country and score are validated and used as hints only for now (not stored).
 4. It matches each row to a stored scheduled fixture whose kickoff is within three hours, home with home and away with away, at the best level any candidate reaches: **exact** (names equal after normalising case, accents, apostrophes and club affixes such as FC, with the `aa`, `oe` and `ae` spellings folded to one letter so `Tromsoe` equals `Tromsø`; the same words in a different order also count, so `Volos NPS` equals `NPS Volos`), then **remembered** (a name that an earlier ticket of yours already matched to that stored name, or a name on the built-in list of official names and English spellings in `seed_aliases.ts`, every entry of which was seen on a real ticket; the memory wins where the two disagree), then **similar** (every word of the shorter name is in the longer one, for example `BRIGHTON` and `Brighton & Hove Albion`; not when the extra words mark another side, such as U21, Women, II or B, and not for names that are only generic words such as United or City). If exactly one fixture fits at that level it is used; two or more is reported as ambiguous. Only when no fixture fits both names does **one team** decide: if exactly one fixture inside the three hours fits one team (at any level above, home with home or away with away) and the other name fits nothing, the other name is taken as another spelling of that fixture's other team, because a team cannot play twice within three hours; two such fixtures is ambiguous. Set `INTAKE_ANCHOR_MATCHING` to `off` to turn this fallback off without a code change. Rows matched by similarity or by one team are listed in the reply so you can check them, and every match result carries how it matched (exact, remembered, similar or one-team; the reply and the audit line show it, and it is not yet stored per row), and every match is remembered for the next ticket (read back from the stored tickets, so nothing extra is kept). Anything else is reported as unmatched and is not used.
-5. It stores the parsed rows (teams, kickoff, odds, bookmaker label) and asks GitHub to run the `Ticket intake` workflow with a narrow token.
+5. It stores the parsed rows (teams, kickoff, odds, bookmaker label, and how each one matched or why it did not) with the read's kind and token counts. For a ticket it then asks GitHub to run the `Ticket intake` workflow with a narrow token; a slate is stored and nothing is frozen.
 6. `python -m proracle.ticket_mode` freezes the arms in the existing ticket tables and replies in your chat.
 
 ## What you can do
@@ -23,17 +23,19 @@ Everything below comes from one list in `supabase/functions/telegram-intake/comm
 
 | Command | What it does |
 |---|---|
-| `send a photo, an image file (PNG, JPEG, WebP) or a PDF of fixtures` | Reads up to 20 fixtures, matches them, freezes arm A, arm C and one arm B per active rule before kickoff and replies. |
+| `send a photo, an image file (PNG, JPEG, WebP) or a PDF of fixtures` | With `ticket` or `slate` in the caption it reads the file as that; without one it asks which and reads nothing yet. A ticket (up to 20 rows) is matched and arm A, arm C and one arm B per active rule are frozen before kickoff. A slate (up to 100 rows) is matched and stored for testing models with nothing frozen. |
+| `/ticket` | Answers the question about the upload waiting (the latest one, kept 60 minutes): reads it as a ticket. More than 20 rows is refused, never cut. With nothing waiting it asks you to send the file first. |
+| `/slate` | Answers the question about the upload waiting: reads it as a slate, up to 100 rows, no frozen picks, off the scoreboard. With nothing waiting it asks you to send the file first. |
 | `/rule <directives separated by ;>` | Proposes a rule for arm B. It is echoed back and used only after YES. Up to 5 rules run at once, each as its own arm (rule v3 is arm B3). |
 | `/retire <version>` | Asks to stop one active rule. It stops only after YES (it waits 60 minutes); its earlier picks stay and are still scored. |
 | `YES` | Confirms what was last asked about: activates the proposed rule, or retires the rule asked about (it waits 60 minutes). |
 | `NO` | Cancels the proposed rule, or the retirement asked about. |
 | `/rules` | Shows every active rule and any proposal or retirement waiting. |
-| `/ticket` | Shows today's tickets and each arm's picks. |
+| `/today` | Shows today's tickets and each arm's picks (this was `/ticket` before tickets and slates). |
 | `/scoreboard` | Hit rate of each arm and each rule on settled ticket picks, with what arms A and C picked on the same fixtures and a rough margin of error, labelled a calibration report card. |
 | `/help` | Shows the list, the limits and what the bot cannot do. |
 
-**Limits:** at most 20 fixtures per ticket; at most 10 vision reads per UTC day (`INTAKE_DAILY_CALL_CAP`); files up to 10 MB; rows that cannot be matched are reported and not used; at most 5 rules active at once.
+**Limits:** at most 20 fixtures per ticket (a longer one is refused, never cut, with a pointer to `/slate`); a slate holds up to 100 rows; at most 10 vision reads per UTC day (`INTAKE_DAILY_CALL_CAP`); at most 2,000,000 reading tokens per UTC day (`INTAKE_DAILY_TOKEN_BUDGET`); files up to 10 MB; an upload waiting for your answer is kept 60 minutes; rows that cannot be matched are reported and not used; at most 5 rules active at once.
 
 **What it cannot do:**
 
@@ -76,10 +78,26 @@ Why this matters for reading results: a rule's pick equals arm A's except where 
 
 Fixtures that already kicked off, have no rating prediction or were not matched are left off the ticket and listed in the reply. Details of the stored tables are in [TICKETS.md](TICKETS.md).
 
+## Tickets and slates
+
+A stored read is one of two kinds, and you say which.
+
+- **Ticket:** a slip you declared, up to 20 rows. It is matched, then arms A, B and C are frozen before kickoff, and it is scored on the scoreboard. More than 20 rows is refused with a pointer to `/slate`; it is never cut to 20.
+- **Slate:** any size, up to 100 rows per read, matched and stored for testing models. No picks are frozen, no computation is started, and it stays off the arm scoreboard. Rows past 100 are listed as rejected.
+
+**Saying which:** put the word `ticket` or `slate` in the caption of the photo or file. With no marker, or both words, the bot asks and waits. It keeps only the Telegram file id, the type, the size and the update id of that upload, only the latest one, and for 60 minutes. Nothing is downloaded, read or counted against the daily call cap or token budget while it waits. `/ticket` or `/slate` then reads that upload as the kind chosen, and uses it up. A bare `/ticket` or `/slate` with nothing waiting (or after it expired) says to send the file first.
+
+**The reply** lists every row read, then the rejected rows with their reasons, then the matching result: how each row matched (exact, remembered, similar or one team) or why it did not. The same facts are stored per row. A reply longer than Telegram's message limit arrives as several messages, in order, never cut. A read that may take a while first says it is reading.
+
+**Tokens and the budget:** the input and output tokens of every vision read are stored with the read and added to the day's total. Beside the daily call cap there is a daily token budget (`INTAKE_DAILY_TOKEN_BUDGET`, default 2,000,000 input plus output tokens, far above a normal day). When the day's total has reached it, a new read is refused with a plain message and resets at 00:00 UTC. A missing, empty or invalid setting gives the default, so a bad setting can never make the bot refuse everything.
+
+**Repeat uploads:** the SHA-256 of the file's bytes is stored with the read. The same file sent again reuses the stored rows: no new vision call, nothing from the call cap, no tokens. Only the hash is kept, never the file. The reused rows are matched again and stored as the kind you asked for this time.
+
 ## Data policy
 
 - The image or PDF is read in memory and **never stored** by this project. It is sent to the Anthropic API for the read; Anthropic's own retention terms apply to that request, so check them before use.
-- Only **parsed values** are stored, in your own Supabase project: team names, kickoff time, the three decimal odds, the bookmaker label as printed, the observed time, and which stored fixture a row matched.
+- Only **parsed values** are stored, in your own Supabase project: team names, kickoff time, the three decimal odds, the bookmaker label as printed, the observed time, which stored fixture a row matched and how, the reasons rows were rejected, and the input and output token counts of each read.
+- Two small things are kept so the intake can ask before reading and avoid reading twice. For an upload it asked about, the **Telegram file id** (a reference into Telegram's own storage, not the file), its type and size, for 60 minutes and only the latest one; and a **SHA-256 fingerprint** of each file it has read, so an identical repeat reuses the earlier read. Neither is the file, neither can rebuild it, and neither is published.
 - A screenshot is third-party content and prices belong to their source. They stay in your private database, are used only by arm B and the model-versus-market comparison, and are never committed, shared or published ([DATA_POLICY.md](DATA_POLICY.md)). Do not use the intake with a site whose terms forbid you from copying its prices.
 - The audit log holds short fixed details and never message or image content. A stranger's message produces a row with no content. When a call to the reading service or to Telegram fails, the row also carries the HTTP status and the service's own short error text (cut to 100 characters, control characters removed), for example `vision REQUEST_FAILED HTTP 401 authentication_error invalid x-api-key`; it never carries a key, a token, the file or the request. A menu sync that fails is recorded the same way (`menu_sync ...`).
 
@@ -103,6 +121,7 @@ You need your own Telegram bot, Anthropic key and Supabase project. Nothing here
 | `GITHUB_DISPATCH_TOKEN` | the token from step 4 |
 | `VISION_MODEL` | optional; default `claude-sonnet-5-5` |
 | `INTAKE_DAILY_CALL_CAP` | optional; 1 to 100, default 10 |
+| `INTAKE_DAILY_TOKEN_BUDGET` | optional; reading tokens (input plus output) per UTC day, 10,000 to 1,000,000,000, default 2,000,000; a missing or invalid value gives the default |
 | `INTAKE_UTC_OFFSET_MINUTES` | optional; the zone your screenshots print times in, default 180 (East Africa Time) |
 | `INTAKE_ANCHOR_MATCHING` | optional; `off`, `0`, `false` or `no` switches the one-team match off; anything else, or unset, leaves it on |
 | `GITHUB_REPOSITORY` | optional; default `14leux/PRORACLE-research` |
@@ -123,4 +142,4 @@ deno test --no-prompt --no-remote supabase/functions/telegram-intake/
 
 The Python side is covered by `tests/test_ticket_mode.py`. To prove the migration on a disposable local database, follow [DATABASE.md](DATABASE.md) and run `supabase/tests/verify_intake.sql` and `supabase/tests/verify_multi_rule.sql` with `psql` inside the local database container; `supabase/tests/intake_catalog_fingerprint.sql` run before and after re-applying the migration must give identical output.
 
-The tickets-and-slates migration (`20261129000000_proracle_ticket_slate.sql`) is proved the same way with `supabase/tests/verify_ticket_slate.sql` and `supabase/tests/ticket_slate_catalog_fingerprint.sql`. It only adds: nothing the deployed function or the workflows read is removed, and it is safe to apply before the code that uses it. Its rollback, `supabase/tests/rollback_ticket_slate.sql`, removes only what it added, refuses to run if that would delete stored data (unless `-v allow_data_loss=1`), and must be tried on a database copy first. Apply the migration to production first, then merge, then redeploy.
+The code for tickets and slates (caption marker, the question, the pending upload, the 20-row refusal, token budget, hash reuse, split replies) is covered by `ticket_slate_test.ts` beside the other function tests. The tickets-and-slates migration (`20261129000000_proracle_ticket_slate.sql`) is proved the same way with `supabase/tests/verify_ticket_slate.sql` and `supabase/tests/ticket_slate_catalog_fingerprint.sql`. It only adds: nothing the deployed function or the workflows read is removed, and it is safe to apply before the code that uses it. Its rollback, `supabase/tests/rollback_ticket_slate.sql`, removes only what it added, refuses to run if that would delete stored data (unless `-v allow_data_loss=1`), and must be tried on a database copy first. Apply the migration to production first, then merge, then redeploy.

@@ -205,7 +205,7 @@ footer { padding-top: 2rem; color: var(--muted); font-size: 0.9rem; border-top: 
       <span class="chip b1">B1</span><span class="chip b2">B2</span><span class="chip b3">B3</span><span class="chip b4">B4</span><span class="chip b5">B5</span><span class="mono" style="color:var(--muted)">five slots at once</span>
     </div>
   </div>
-  <p class="say"><b>One match, everyone's pick.</b> This is what <code>/ticket</code> shows you (example):</p>
+  <p class="say"><b>One match, everyone's pick.</b> This is what <code>/today</code> shows you (example):</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Match</th><th>A</th><th>B1 (2 draws)</th><th>B2 (1 upset)</th><th>C</th></tr></thead>
     <tbody>
@@ -304,7 +304,7 @@ Arm B is one pick set per active rule (B3 is rule v3):
     <li>
       <div class="head"><h3>Look at today's tickets</h3></div>
       <div class="body">
-        <div class="chat"><div class="msg me">/ticket</div><div class="msg bot"><small>Bot</small>Simulated ticket, 20 fixtures:
+        <div class="chat"><div class="msg me">/today</div><div class="msg bot"><small>Bot</small>Simulated ticket, 20 fixtures:
 - Lions v Tigers: A home | B1 draw (forced) | B2 home | C draw (forced)
 ...
 Screenshot ticket, 10 fixtures:
@@ -405,14 +405,14 @@ It would no longer be used on tickets frozen from now on; its earlier picks stay
     <div class="card"><h3>Only when you act</h3><p>PDF tickets, new rules, stopping rules, looking at things. Nothing else changes while you are away. On quiet days the data still grows.</p></div>
   </div>
   <div class="note"><b>Times drift.</b> GitHub sometimes starts a scheduled run late, by minutes or even an hour. The times are 05:37 and 17:37 UTC.</div>
-  <div class="good"><b>Try it tonight:</b> add your rules now. Tomorrow after 08:37, <code>/ticket</code> shows a daily ticket with B1, B2 ... next to A and C. The first scores appear after those games finish and a later run records them.</div>
+  <div class="good"><b>Try it tonight:</b> add your rules now. Tomorrow after 08:37, <code>/today</code> shows a daily ticket with B1, B2 ... next to A and C. The first scores appear after those games finish and a later run records them.</div>
   <p class="say">A rule you add late in the day first appears on the <b>next</b> day's daily ticket, because the ticket is written once and never edited. A PDF ticket uses your rules straight away.</p>
 </section>
 
 <section id="data">
   <h2>See the data</h2>
   <div class="grid g2">
-    <div class="card"><h3>In Telegram</h3><p><code>/rules</code> who is playing<br><code>/ticket</code> today's picks<br><code>/scoreboard</code> who is winning</p></div>
+    <div class="card"><h3>In Telegram</h3><p><code>/rules</code> who is playing<br><code>/today</code> today's picks<br><code>/scoreboard</code> who is winning</p></div>
     <div class="card"><h3>In Supabase</h3><p>Open your project, then <b>SQL Editor</b>, paste a query, press Run. Everything below only reads. Nothing here changes anything.</p></div>
   </div>
 
@@ -588,7 +588,7 @@ limit 30;</pre>
       <tr><td><code>NO</code></td><td>Cancels it.</td></tr>
       <tr><td><code>/retire 3</code></td><td>Asks to stop rule 3 (then YES).</td></tr>
       <tr><td><code>/rules</code></td><td>Lists the active rules and anything waiting.</td></tr>
-      <tr><td><code>/ticket</code></td><td>Today's tickets and every player's picks.</td></tr>
+      <tr><td><code>/today</code></td><td>Today's tickets and every player's picks.</td></tr>
       <tr><td><code>/scoreboard</code></td><td>The report card, per ticket kind.</td></tr>
       <tr><td>send a PDF or photo</td><td>Reads up to 20 fixtures, matches them, freezes A, C and every rule before kickoff.</td></tr>
       <tr><td><code>/help</code></td><td>Commands, limits and what the bot cannot do.</td></tr>

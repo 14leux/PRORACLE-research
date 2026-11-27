@@ -176,7 +176,7 @@ Deno.test("a vision service failure is audited with its reason and the reply say
   await post(timeout, fileMessage("photo"));
   assert.equal(timeout.store.audits.at(-1)!.detail, "vision TIMEOUT");
 
-  const unreadable = makeKit({ vision: () => Promise.resolve("not an object") });
+  const unreadable = makeKit({ vision: () => Promise.resolve({ output: "not an object", usage: null }) });
   await post(unreadable, fileMessage("photo"));
   assert.equal(unreadable.store.audits.at(-1)!.detail, "vision BAD_RESPONSE");
   assert.match(unreadable.tg.sent.at(-1)!.text, /clearer image/);
@@ -202,34 +202,26 @@ Deno.test("a failing menu sync is audited with its reason, never changes the rep
   assert.equal(kit.tg.menuSyncs.length, 3, "rechecked after an hour, so a menu changed from outside is put back");
 });
 
-Deno.test("past the daily cap the file is refused before it is downloaded or read", async () => {
+Deno.test("past the daily cap the file is refused before it is read", async () => {
   const kit = makeKit({ dailyCap: 2 });
   kit.setVision({ fixtures: [row("Alpha", "Beta")] });
   kit.store.fixtures = [fixture("f1", "Alpha", "Beta", KICKOFF)];
-  for (let i = 0; i < 2; i++) await post(kit, fileMessage("photo"));
+  // Deliberate change: two photos with identical bytes now reuse one read, so each upload here has its own bytes.
+  for (let i = 0; i < 2; i++) {
+    kit.tg.files.set("photo-big", new Uint8Array([10 + i]));
+    await post(kit, fileMessage("photo"));
+  }
   assert.equal(kit.visionCalls.length, 2);
-  const before = kit.tg.downloads.length;
+  // Deliberate change: the file is now downloaded first (a repeat of an already-read file is allowed on a
+  // used-up day), so the refusal is before the read rather than before the download.
+  kit.tg.files.set("photo-big", new Uint8Array([99]));
   await post(kit, fileMessage("photo"));
   assert.equal(kit.visionCalls.length, 2);
-  assert.equal(kit.tg.downloads.length, before);
   assert.match(kit.tg.sent.at(-1)!.text, /daily limit of 2/);
   assert.equal(kit.store.audits.at(-1)!.action, "CAP_REACHED");
 });
 
-Deno.test("a ticket with more than 20 fixtures keeps the first 20 and says so", async () => {
-  const kit = makeKit();
-  const many = Array.from({ length: 25 }, (_, i) => row(`Home ${i}`, `Away ${i}`));
-  kit.setVision({ fixtures: many });
-  kit.store.fixtures = many.slice(0, 20).map((r, i) => fixture(`f${i}`, r.home_team, r.away_team, KICKOFF));
-  await post(kit, fileMessage("photo"));
-  const saved = kit.store.intakes[0];
-  assert.equal(saved.ticket.rowsRead, 25);
-  assert.equal(saved.ticket.rowsKept, 20);
-  assert.equal(saved.rows.length, 20);
-  assert.equal(saved.rows.at(-1)!.row.home_team, "Home 19");
-  assert.match(kit.tg.texts, /Only the first 20 valid rows are used/);
-  assert.deepEqual(kit.dispatched, ["intake-1"]);
-});
+// Deliberate change: before tickets and slates a ticket over 20 rows was cut to its first 20; it is now refused (ticket_slate_test.ts).
 
 Deno.test("instruction-like text in the image cannot cause an action", async () => {
   const kit = makeKit();
@@ -552,7 +544,7 @@ Deno.test("an internal failure gives a short generic reply, an error audit, and 
   assert.ok(!kit.tg.texts.includes("forced failure"));
 });
 
-Deno.test("rules, ticket and scoreboard views", async () => {
+Deno.test("rules, today and scoreboard views", async () => {
   const kit = makeKit();
   await post(kit, textMessage("/rules"));
   assert.match(kit.tg.sent.at(-1)!.text, /No rule is active/);
@@ -570,7 +562,7 @@ Deno.test("rules, ticket and scoreboard views", async () => {
   assert.match(kit.tg.sent.at(-1)!.text, /Waiting for YES or NO: stop rule v10/);
   kit.store.retiring = null;
 
-  await post(kit, textMessage("/ticket"));
+  await post(kit, textMessage("/today"));
   assert.match(kit.tg.sent.at(-1)!.text, /No tickets for 2026-11-26/);
   const pick = (arm: string, armVersion: string, p: string, extra = {}) =>
     ({ home: "Alpha", away: "Beta", arm, armVersion, pick: p, adjustment: null, forced: false, ...extra });
@@ -584,7 +576,7 @@ Deno.test("rules, ticket and scoreboard views", async () => {
       pick("B", "rule-v2", "DRAW", { adjustment: "FORCED_DRAW" }),
     ],
   }];
-  await post(kit, textMessage("/ticket"));
+  await post(kit, textMessage("/today"));
   assert.match(
     kit.tg.sent.at(-1)!.text,
     /Simulated ticket, 1 fixtures:\n- Alpha v Beta: A home \| B2 draw \(forced\) \| B10 away \(reversed\) \| C draw \(forced\)/,

@@ -5,16 +5,15 @@
 // supabase/config.toml and the Telegram secret-token header is the authentication.
 
 import { handleRequest, type Deps } from "./handler.ts";
+import { DEFAULT_TOKEN_BUDGET } from "./commands.ts";
 import { anchorEnabled } from "./matching.ts";
+import { intSetting } from "./settings.ts";
 import { PostgrestStore } from "./store.ts";
 import { TelegramHttp } from "./telegram.ts";
-import { buildVisionRequest, callVision } from "./vision.ts";
+import { buildVisionRequest, callVisionWithUsage } from "./vision.ts";
 
 function intEnv(name: string, fallback: number, min: number, max: number): number {
-  const raw = Deno.env.get(name);
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+  return intSetting(Deno.env.get(name), fallback, min, max);
 }
 
 function configure(): Deps | null {
@@ -32,13 +31,15 @@ function configure(): Deps | null {
     secretToken,
     allowedChatId,
     dailyCap: intEnv("INTAKE_DAILY_CALL_CAP", 10, 1, 100),
+    // A missing, empty or odd value gives the default; 0 never means "refuse everything".
+    dailyTokenBudget: intEnv("INTAKE_DAILY_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET, 10_000, 1_000_000_000),
     model: need("VISION_MODEL") || "claude-sonnet-5-5",
     utcOffsetMinutes: intEnv("INTAKE_UTC_OFFSET_MINUTES", 180, -720, 840),
     // On unless INTAKE_ANCHOR_MATCHING says off: a missing or odd value never switches matching off.
     anchorMatching: anchorEnabled(Deno.env.get("INTAKE_ANCHOR_MATCHING")),
     store: new PostgrestStore(supabaseUrl, serviceKey),
     telegram: new TelegramHttp(botToken),
-    vision: (body: ReturnType<typeof buildVisionRequest>) => callVision(fetch, anthropicKey, body),
+    vision: (body: ReturnType<typeof buildVisionRequest>) => callVisionWithUsage(fetch, anthropicKey, body),
     // The narrow token starts only the intake workflow in one repository; without it nothing is computed.
     dispatch: async (intakeId: string) => {
       if (dispatchToken.length === 0) return false;

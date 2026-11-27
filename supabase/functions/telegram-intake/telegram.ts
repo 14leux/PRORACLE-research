@@ -25,6 +25,40 @@ export class TelegramError extends Error {
 
 export const MAX_MESSAGE_CHARS = 4000;
 
+/**
+ * Splits a reply into messages of at most `max` characters, at line breaks where it can, so nothing is cut
+ * or dropped (Telegram refuses a message over 4096 characters). A single line longer than `max` is split
+ * at a space, or at `max` when it has none. Joining the parts with newlines gives the text back, apart from
+ * the whitespace at a split.
+ */
+export function splitMessage(text: string, max: number = MAX_MESSAGE_CHARS): string[] {
+  if (text.length <= max) return [text];
+  const parts: string[] = [];
+  let current = "";
+  const flush = () => {
+    if (current !== "") parts.push(current);
+    current = "";
+  };
+  for (const line of text.split("\n")) {
+    let rest = line;
+    while (rest.length > max) {
+      const cut = rest.lastIndexOf(" ", max);
+      const at = cut > 0 ? cut : max;
+      flush();
+      parts.push(rest.slice(0, at));
+      rest = rest.slice(at).replace(/^ /, "");
+    }
+    if (current === "") current = rest;
+    else if (current.length + 1 + rest.length <= max) current += "\n" + rest;
+    else {
+      flush();
+      current = rest;
+    }
+  }
+  flush();
+  return parts;
+}
+
 export class TelegramHttp implements TelegramApi {
   constructor(private readonly token: string, private readonly fetchFn: FetchLike = fetch) {}
 
@@ -54,8 +88,9 @@ export class TelegramHttp implements TelegramApi {
   }
 
   async send(chatId: string, text: string): Promise<void> {
-    const clipped = text.length > MAX_MESSAGE_CHARS ? text.slice(0, MAX_MESSAGE_CHARS - 1) + "…" : text;
-    await this.call("sendMessage", { chat_id: chatId, text: clipped, disable_web_page_preview: true });
+    for (const part of splitMessage(text)) {
+      await this.call("sendMessage", { chat_id: chatId, text: part, disable_web_page_preview: true });
+    }
   }
 
   async syncMenu(menu: readonly MenuEntry[]): Promise<"UNCHANGED" | "UPDATED"> {

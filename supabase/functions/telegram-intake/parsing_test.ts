@@ -83,7 +83,7 @@ Deno.test("kickoff times are converted from the printed zone to UTC", () => {
   assert.equal(kickoffUtc(undefined, "10:00", 180, "2026-11-26"), null);
 });
 
-Deno.test("vision output is validated: bad rows dropped, odds all-or-none, first 20 kept, extra keys ignored", () => {
+Deno.test("vision output is validated: bad rows rejected with a reason, odds all-or-none, extra keys ignored", () => {
   const raw = {
     bookmaker: "  SportPesa ",
     stray: "ignored",
@@ -99,6 +99,13 @@ Deno.test("vision output is validated: bad rows dropped, odds all-or-none, first
     ],
   };
   const parsed = parseVisionOutput(raw, ctx);
+  assert.deepEqual(parsed.rejected, [
+    { position: 4, home: "Same", away: "same", reason: "SAME_TEAM" },
+    { position: 5, home: null, away: "Valid", reason: "MISSING_TEAM" },
+    { position: 6, home: null, away: "Valid", reason: "MISSING_TEAM" },
+    { position: 7, home: null, away: null, reason: "NOT_A_FIXTURE" },
+    { position: 8, home: null, away: null, reason: "NOT_A_FIXTURE" },
+  ]);
   assert.equal(parsed.bookmaker, "SportPesa");
   assert.equal(parsed.rowsRead, 8);
   assert.deepEqual(parsed.rows.map((r) => r.home_team), ["Alpha", "Gamma", "Eps"]);
@@ -108,10 +115,16 @@ Deno.test("vision output is validated: bad rows dropped, odds all-or-none, first
   assert.equal(parsed.rows[0].kickoff_at, "2026-11-26T12:00:00.000Z");
   assert.ok(!("extra" in parsed.rows[0]));
 
+  // A parse no longer cuts at 20: a ticket over 20 is refused by the handler, a slate keeps up to 100.
   const many = parseVisionOutput({ fixtures: Array.from({ length: 30 }, (_, i) => row(`H${i}`, `A${i}`)) }, ctx);
   assert.equal(many.rowsRead, 30);
-  assert.equal(many.rows.length, 20);
+  assert.equal(many.rows.length, 30);
   assert.equal(many.rows[0].home_team, "H0");
+  assert.equal(many.rejected.length, 0);
+
+  const huge = parseVisionOutput({ fixtures: Array.from({ length: 105 }, (_, i) => row(`H${i}`, `A${i}`)) }, ctx);
+  assert.equal(huge.rows.length, 100);
+  assert.deepEqual(huge.rejected.map((r) => [r.position, r.reason]), [[101, "OVER_LIMIT"], [102, "OVER_LIMIT"], [103, "OVER_LIMIT"], [104, "OVER_LIMIT"], [105, "OVER_LIMIT"]]);
 });
 
 Deno.test("vision output that is not the expected shape is rejected", () => {
