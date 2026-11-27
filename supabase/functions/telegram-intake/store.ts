@@ -4,7 +4,7 @@
 
 import type { RuleV1 } from "./rules.ts";
 import type { MatchedHistoryRow, MatchedRow, StoredFixture } from "./matching.ts";
-import type { FetchLike } from "./vision.ts";
+import type { FetchLike, ParsedRow, RejectedRow } from "./vision.ts";
 
 export type UpdateKind = "IMAGE" | "PDF" | "COMMAND" | "TEXT" | "REJECTED";
 export type AuditAction =
@@ -20,7 +20,11 @@ export type AuditAction =
   | "CAP_REACHED"
   | "BAD_INPUT"
   | "DISPATCH"
-  | "ERROR";
+  | "ERROR"
+  | "SLATE"
+  | "PENDING"
+  | "REUSED"
+  | "TOKEN_CAP";
 export type AuditOutcome = "OK" | "REFUSED" | "ERROR";
 
 export interface RuleRecord {
@@ -30,8 +34,45 @@ export interface RuleRecord {
   source_text: string;
 }
 
+/** What a stored read is: a declared slip (arms frozen) or a slate (kept for testing models, nothing frozen). */
+export type ReadKind = "TICKET" | "SLATE";
+
+/** The one upload waiting for the answer to "ticket or slate?": a Telegram file id and its facts, never the file. */
+export interface PendingUpload {
+  id: string;
+  updateId: number;
+  fileId: string;
+  fileType: "IMAGE" | "PDF";
+  fileSize: number | null;
+  /** ISO time after which the upload no longer counts (60 minutes after it was sent). */
+  expiresAt: string;
+}
+
+/** An earlier read found again by the SHA-256 of the file's bytes: what was stored from it, used instead of a new read. */
+export interface StoredRead {
+  intakeId: string;
+  bookmaker: string | null;
+  rowsRead: number;
+  rows: ParsedRow[];
+  rejected: RejectedRow[];
+}
+
+/** Today's use of the vision call, for the call cap and the token budget. */
+export interface DayUsage {
+  calls: number;
+  tokens: number;
+}
+
 export interface IntakeInsert {
   updateId: number;
+  kind: ReadKind;
+  /** Vision tokens for this read; null for a read that made no call (a reused one) or whose response gave no count. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  /** The pending upload this read answers, used up by it; null when the caption named the kind. */
+  pendingUploadId: string | null;
+  /** SHA-256 (hex) of the file's bytes, so an identical repeat can reuse this read. */
+  fileSha256: string | null;
   ticketDate: string;
   sourceKind: "IMAGE" | "PDF";
   bookmaker: string | null;
@@ -83,7 +124,16 @@ export interface IntakeStore {
   findFixtures(fromIso: string, toIso: string): Promise<StoredFixture[]>;
   /** The newest ticket rows that matched a stored fixture, with that fixture's names: the matching memory. */
   matchedHistory(): Promise<MatchedHistoryRow[]>;
-  saveIntake(ticket: IntakeInsert, rows: readonly MatchedRow[]): Promise<string>;
+  saveIntake(ticket: IntakeInsert, rows: readonly MatchedRow[], rejected: readonly RejectedRow[]): Promise<string>;
+  /** Keeps the Telegram file id of an upload that is waiting for "ticket or slate?" (60 minutes; no file). */
+  savePending(upload: { updateId: number; fileId: string; fileType: "IMAGE" | "PDF"; fileSize: number | null }): Promise<void>;
+  /** The newest upload still waiting: not expired and not yet read. Null when there is none. */
+  latestPending(): Promise<PendingUpload | null>;
+  /** The latest earlier read made from a file with this SHA-256, or null. */
+  findRead(sha256: string): Promise<StoredRead | null>;
+  usageToday(date: string): Promise<DayUsage>;
+  /** Adds one read's tokens to the UTC day's totals. */
+  addTokens(date: string, input: number, output: number): Promise<void>;
   audit(action: AuditAction, outcome: AuditOutcome, detail: string | null, updateId: number | null): Promise<void>;
   /** Every rule in force (up to five arm B pick sets), oldest version first. */
   activeRules(): Promise<RuleRecord[]>;
@@ -195,10 +245,104 @@ export class PostgrestStore implements IntakeStore {
     return Array.isArray(rows) ? (rows as MatchedHistoryRow[]) : [];
   }
 
-  async saveIntake(t: IntakeInsert, rows: readonly MatchedRow[]): Promise<string> {
+  async savePending(u: { updateId: number; fileId: string; fileType: "IMAGE" | "PDF"; fileSize: number | null }): Promise<void> {
+    await this.rest("POST", "intake_pending_uploads", {
+      body: { update_id: u.updateId, file_id: u.fileId, file_type: u.fileType, file_size: u.fileSize },
+      prefer: "return=minimal",
+    });
+  }
+
+  async latestPending(): Promise<PendingUpload | null> {
+    const rows = await this.rest("GET", "intake_pending_upload", {
+      query: [["select", "id,update_id,file_id,file_type,file_size,expires_at"], ["limit", "1"]],
+    });
+    const r = Array.isArray(rows)
+      ? (rows[0] as { id: string; update_id: number; file_id: string; file_type: string; file_size: number | null; expires_at: string } | undefined)
+      : undefined;
+    if (!r || (r.file_type !== "IMAGE" && r.file_type !== "PDF")) return null;
+    return {
+      id: r.id,
+      updateId: Number(r.update_id),
+      fileId: r.file_id,
+      fileType: r.file_type,
+      fileSize: r.file_size === null ? null : Number(r.file_size),
+      expiresAt: new Date(r.expires_at).toISOString(),
+    };
+  }
+
+  async findRead(sha256: string): Promise<StoredRead | null> {
+    const hashes = await this.rest("GET", "intake_file_hashes", {
+      query: [["select", "intake_id"], ["file_sha256", `eq.${sha256}`], ["order", "created_at.desc"], ["limit", "1"]],
+    });
+    const intakeId = Array.isArray(hashes) ? (hashes[0] as { intake_id?: unknown } | undefined)?.intake_id : undefined;
+    if (typeof intakeId !== "string") return null;
+    const [head, rows, rejected] = await Promise.all([
+      this.rest("GET", "intake_tickets", {
+        query: [["select", "bookmaker_label,rows_read"], ["id", `eq.${intakeId}`], ["limit", "1"]],
+      }),
+      this.rest("GET", "intake_ticket_rows", {
+        query: [
+          ["select", "home_team,away_team,kickoff_at,home_odds,draw_odds,away_odds"],
+          ["intake_id", `eq.${intakeId}`],
+          ["order", "position.asc"],
+          ["limit", "100"],
+        ],
+      }),
+      this.rest("GET", "intake_rejected_rows", {
+        query: [
+          ["select", "position,home_team,away_team,reason"],
+          ["intake_id", `eq.${intakeId}`],
+          ["order", "position.asc"],
+          ["limit", "500"],
+        ],
+      }),
+    ]);
+    const h = Array.isArray(head) ? (head[0] as { bookmaker_label: string | null; rows_read: number } | undefined) : undefined;
+    if (!h || !Array.isArray(rows) || rows.length === 0) return null;
+    const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+    return {
+      intakeId,
+      bookmaker: h.bookmaker_label,
+      rowsRead: Number(h.rows_read),
+      rows: (rows as Record<string, unknown>[]).map((r) => ({
+        home_team: String(r.home_team),
+        away_team: String(r.away_team),
+        kickoff_at: typeof r.kickoff_at === "string" ? new Date(r.kickoff_at).toISOString() : null,
+        home_odds: num(r.home_odds),
+        draw_odds: num(r.draw_odds),
+        away_odds: num(r.away_odds),
+      })),
+      rejected: (Array.isArray(rejected) ? (rejected as Record<string, unknown>[]) : []).map((r) => ({
+        position: Number(r.position),
+        home: typeof r.home_team === "string" ? r.home_team : null,
+        away: typeof r.away_team === "string" ? r.away_team : null,
+        reason: r.reason as RejectedRow["reason"],
+      })),
+    };
+  }
+
+  async usageToday(date: string): Promise<DayUsage> {
+    const rows = await this.rest("GET", "intake_usage", {
+      query: [["select", "vision_calls,input_tokens,output_tokens"], ["usage_date", `eq.${date}`], ["limit", "1"]],
+    });
+    const r = Array.isArray(rows)
+      ? (rows[0] as { vision_calls: number; input_tokens: number; output_tokens: number } | undefined)
+      : undefined;
+    return r ? { calls: Number(r.vision_calls), tokens: Number(r.input_tokens) + Number(r.output_tokens) } : { calls: 0, tokens: 0 };
+  }
+
+  async addTokens(date: string, input: number, output: number): Promise<void> {
+    await this.rest("POST", "rpc/intake_add_tokens", { body: { p_date: date, p_input: input, p_output: output } });
+  }
+
+  async saveIntake(t: IntakeInsert, rows: readonly MatchedRow[], rejected: readonly RejectedRow[]): Promise<string> {
     const created = await this.rest("POST", "intake_tickets", {
       body: {
         update_id: t.updateId,
+        kind: t.kind,
+        input_tokens: t.inputTokens,
+        output_tokens: t.outputTokens,
+        pending_upload_id: t.pendingUploadId,
         ticket_date: t.ticketDate,
         source_kind: t.sourceKind,
         bookmaker_label: t.bookmaker,
@@ -223,7 +367,22 @@ export class PostgrestStore implements IntakeStore {
           draw_odds: m.row.draw_odds,
           away_odds: m.row.away_odds,
           matched_fixture_id: m.fixtureId,
+          read_kind: t.kind,
+          match_via: m.fixtureId === null ? null : (m.via ?? null),
+          unmatched_reason: m.fixtureId === null ? m.reason : null,
         })),
+        prefer: "return=minimal",
+      });
+    }
+    if (rejected.length > 0) {
+      await this.rest("POST", "intake_rejected_rows", {
+        body: rejected.map((r) => ({ intake_id: id, position: r.position, home_team: r.home, away_team: r.away, reason: r.reason })),
+        prefer: "return=minimal",
+      });
+    }
+    if (t.fileSha256 !== null) {
+      await this.rest("POST", "intake_file_hashes", {
+        body: { file_sha256: t.fileSha256, intake_id: id },
         prefer: "return=minimal",
       });
     }

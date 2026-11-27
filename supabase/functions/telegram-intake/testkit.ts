@@ -2,11 +2,15 @@
 // builders for webhook requests. No network, no clock, no secrets (the values below are placeholders).
 
 import type { Deps } from "./handler.ts";
+import { DEFAULT_TOKEN_BUDGET } from "./commands.ts";
 import type { MatchedHistoryRow, MatchedRow, StoredFixture } from "./matching.ts";
 import type {
   AuditAction,
   AuditOutcome,
+  DayUsage,
   IntakeInsert,
+  PendingUpload,
+  StoredRead,
   IntakeStore,
   RuleRecord,
   ScoreRow,
@@ -14,6 +18,7 @@ import type {
   UpdateKind,
 } from "./store.ts";
 import type { RuleV1 } from "./rules.ts";
+import type { RejectedRow, TokenUsage, VisionResult } from "./vision.ts";
 import { type MenuEntry, type TelegramApi, TelegramError } from "./telegram.ts";
 
 export const SECRET = "placeholder-webhook-secret";
@@ -25,7 +30,14 @@ export class FakeStore implements IntakeStore {
   claimKinds: UpdateKind[] = [];
   calls = new Map<string, number>();
   fixtures: StoredFixture[] = [];
-  intakes: { ticket: IntakeInsert; rows: MatchedRow[]; id: string }[] = [];
+  intakes: { ticket: IntakeInsert; rows: MatchedRow[]; rejected: RejectedRow[]; id: string }[] = [];
+  /** Uploads waiting for the ticket-or-slate answer, oldest first; the last unexpired, unused one is offered. */
+  pendings: (PendingUpload & { createdAt: number })[] = [];
+  /** Tokens added to each UTC day, and what findRead returns for a SHA-256. */
+  tokenTotals = new Map<string, number>();
+  reads = new Map<string, StoredRead>();
+  /** When a pending upload was sent, for its 60-minute expiry. */
+  pendingNow = NOW.getTime();
   audits: { action: AuditAction; outcome: AuditOutcome; detail: string | null; updateId: number | null }[] = [];
   rules: RuleRecord[] = [];
   /** The rules in force, oldest version first. */
@@ -70,11 +82,57 @@ export class FakeStore implements IntakeStore {
     return Promise.resolve(this.history);
   }
 
-  saveIntake(ticket: IntakeInsert, rows: readonly MatchedRow[]): Promise<string> {
+  saveIntake(ticket: IntakeInsert, rows: readonly MatchedRow[], rejected: readonly RejectedRow[]): Promise<string> {
     this.guard("saveIntake");
     const id = `intake-${this.intakes.length + 1}`;
-    this.intakes.push({ ticket, rows: [...rows], id });
+    if (ticket.pendingUploadId !== null && this.intakes.some((i) => i.ticket.pendingUploadId === ticket.pendingUploadId)) {
+      return Promise.reject(new Error("a pending upload is used once"));
+    }
+    this.intakes.push({ ticket, rows: [...rows], rejected: [...rejected], id });
+    if (ticket.fileSha256 !== null) {
+      this.reads.set(ticket.fileSha256, {
+        intakeId: id,
+        bookmaker: ticket.bookmaker,
+        rowsRead: ticket.rowsRead,
+        rows: rows.map((r) => r.row),
+        rejected: [...rejected],
+      });
+    }
     return Promise.resolve(id);
+  }
+
+  savePending(upload: { updateId: number; fileId: string; fileType: "IMAGE" | "PDF"; fileSize: number | null }): Promise<void> {
+    this.guard("savePending");
+    this.pendings.push({
+      id: `pending-${this.pendings.length + 1}`,
+      ...upload,
+      createdAt: this.pendingNow,
+      expiresAt: new Date(this.pendingNow + 60 * 60_000).toISOString(),
+    });
+    return Promise.resolve();
+  }
+
+  /** Like the database view: only the newest upload, and only if it has not been read yet (the handler checks expiry). */
+  latestPending(): Promise<PendingUpload | null> {
+    this.guard("latestPending");
+    const p = this.pendings.at(-1);
+    return Promise.resolve(p !== undefined && !this.intakes.some((i) => i.ticket.pendingUploadId === p.id) ? p : null);
+  }
+
+  findRead(sha256: string): Promise<StoredRead | null> {
+    this.guard("findRead");
+    return Promise.resolve(this.reads.get(sha256) ?? null);
+  }
+
+  usageToday(date: string): Promise<DayUsage> {
+    this.guard("usageToday");
+    return Promise.resolve({ calls: this.calls.get(date) ?? 0, tokens: this.tokenTotals.get(date) ?? 0 });
+  }
+
+  addTokens(date: string, input: number, output: number): Promise<void> {
+    this.guard("addTokens");
+    this.tokenTotals.set(date, (this.tokenTotals.get(date) ?? 0) + input + output);
+    return Promise.resolve();
   }
 
   audit(action: AuditAction, outcome: AuditOutcome, detail: string | null, updateId: number | null): Promise<void> {
@@ -187,6 +245,8 @@ export interface Kit {
   visionCalls: unknown[];
   dispatched: string[];
   setVision: (output: unknown) => void;
+  /** What the fake vision call reports it used; null means the response carried no usage. */
+  setUsage: (usage: TokenUsage | null) => void;
   setDispatch: (ok: boolean) => void;
 }
 
@@ -196,19 +256,21 @@ export function makeKit(overrides: Partial<Deps> = {}): Kit {
   const visionCalls: unknown[] = [];
   const dispatched: string[] = [];
   let output: unknown = { fixtures: [] };
+  let usage: TokenUsage | null = { input: 1200, output: 300 };
   let dispatchOk = true;
   const deps: Deps = {
     secretToken: SECRET,
     allowedChatId: ALLOWED,
     dailyCap: 10,
+    dailyTokenBudget: DEFAULT_TOKEN_BUDGET,
     model: "claude-sonnet-5-5",
     utcOffsetMinutes: 180,
     anchorMatching: true,
     store,
     telegram: tg,
-    vision: (body) => {
+    vision: (body): Promise<VisionResult> => {
       visionCalls.push(body);
-      return Promise.resolve(output);
+      return Promise.resolve({ output, usage });
     },
     dispatch: (id) => {
       dispatched.push(id);
@@ -225,6 +287,9 @@ export function makeKit(overrides: Partial<Deps> = {}): Kit {
     dispatched,
     setVision: (o) => {
       output = o;
+    },
+    setUsage: (u) => {
+      usage = u;
     },
     setDispatch: (ok) => {
       dispatchOk = ok;
@@ -250,12 +315,14 @@ export function textMessage(text: string, opts: { updateId?: number; chatId?: nu
   };
 }
 
+/** A photo or file. The caption defaults to the word ticket (the marker that skips the question); pass caption: null to send none. */
 export function fileMessage(
   kind: "photo" | { mime: string; size?: number },
-  opts: { updateId?: number; size?: number } = {},
+  opts: { updateId?: number; size?: number; caption?: string | null } = {},
 ) {
   const chat = Number(ALLOWED);
-  const base = { chat: { id: chat, type: "private" }, from: { id: chat } };
+  const caption = opts.caption === undefined ? "ticket" : opts.caption;
+  const base = { chat: { id: chat, type: "private" }, from: { id: chat }, ...(caption === null ? {} : { caption }) };
   const message = kind === "photo"
     ? { ...base, photo: [{ file_id: "small", file_size: 100 }, { file_id: "photo-big", file_size: opts.size ?? 2000 }] }
     : { ...base, document: { file_id: "doc-1", mime_type: kind.mime, file_size: kind.size ?? 5000 } };

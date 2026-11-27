@@ -3,7 +3,7 @@
 // Nothing the model returns is ever executed, used as a command, or turned into a rule: it can only
 // fill the fields below, so text inside an image has no way to cause an action.
 
-import { MAX_FIXTURES } from "./commands.ts";
+import { SLATE_MAX_ROWS } from "./commands.ts";
 
 export const ALLOWED_MEDIA: ReadonlySet<string> = new Set([
   "image/jpeg",
@@ -27,12 +27,38 @@ export interface ParsedRow {
   away_score?: number | null;
 }
 
+/** Why a row the model returned was not used. Fixed words, the same set the database allows. */
+export type RejectReason = "NOT_A_FIXTURE" | "MISSING_TEAM" | "SAME_TEAM" | "OVER_LIMIT";
+
+export interface RejectedRow {
+  /** 1-based place in the list the model returned. */
+  position: number;
+  /** The cleaned names when they could be read, else null. */
+  home: string | null;
+  away: string | null;
+  reason: RejectReason;
+}
+
 export interface ParsedTicket {
   bookmaker: string | null;
-  /** Rows the model returned (capped), before validation and the 20-row cap. */
+  /** Rows the model returned (capped at 500), before validation. */
   rowsRead: number;
-  /** Valid rows in the order shown, at most MAX_FIXTURES. */
+  /** Valid rows in the order shown, at most SLATE_MAX_ROWS. A ticket's own 20-row limit is the handler's refusal. */
   rows: ParsedRow[];
+  /** Every other row the model returned, with the reason it was not used. */
+  rejected: RejectedRow[];
+}
+
+/** What one vision call cost, as the API reports it (null when the response carried no usage). */
+export interface TokenUsage {
+  input: number;
+  output: number;
+}
+
+export interface VisionResult {
+  /** The forced tool's input, unvalidated. */
+  output: unknown;
+  usage: TokenUsage | null;
 }
 
 export class VisionError extends Error {
@@ -71,7 +97,7 @@ export const VISION_TOOL = {
       bookmaker: { type: "string", maxLength: 40, description: "Name of the betting site if printed, else omit." },
       fixtures: {
         type: "array",
-        maxItems: 40,
+        maxItems: 150,
         items: {
           type: "object",
           properties: {
@@ -175,12 +201,28 @@ export function parseVisionOutput(raw: unknown, ctx: { today: string; utcOffsetM
   }
   const input = raw as { bookmaker?: unknown; fixtures: unknown[] };
   const rows: ParsedRow[] = [];
-  for (const item of input.fixtures.slice(0, MAX_ROWS_COUNTED)) {
-    if (typeof item !== "object" || item === null) continue;
+  const rejected: RejectedRow[] = [];
+  for (const [index, item] of input.fixtures.slice(0, MAX_ROWS_COUNTED).entries()) {
+    const position = index + 1;
+    if (typeof item !== "object" || item === null) {
+      rejected.push({ position, home: null, away: null, reason: "NOT_A_FIXTURE" });
+      continue;
+    }
     const row = item as Record<string, unknown>;
     const home = cleanName(row.home_team, TEAM_NAME, 60);
     const away = cleanName(row.away_team, TEAM_NAME, 60);
-    if (home === null || away === null || home.toLowerCase() === away.toLowerCase()) continue;
+    if (home === null || away === null) {
+      rejected.push({ position, home, away, reason: "MISSING_TEAM" });
+      continue;
+    }
+    if (home.toLowerCase() === away.toLowerCase()) {
+      rejected.push({ position, home, away, reason: "SAME_TEAM" });
+      continue;
+    }
+    if (rows.length >= SLATE_MAX_ROWS) {
+      rejected.push({ position, home, away, reason: "OVER_LIMIT" });
+      continue;
+    }
     const prices = [odds(row.home_odds), odds(row.draw_odds), odds(row.away_odds)];
     const complete = prices.every((p) => p !== null);
     const homeScore = goals(row.home_score);
@@ -197,13 +239,20 @@ export function parseVisionOutput(raw: unknown, ctx: { today: string; utcOffsetM
       home_score: scored ? homeScore : null,
       away_score: scored ? awayScore : null,
     });
-    if (rows.length >= MAX_FIXTURES) break;
   }
   return {
     bookmaker: cleanName(input.bookmaker, BOOKMAKER, 40),
     rowsRead: Math.min(input.fixtures.length, MAX_ROWS_COUNTED),
     rows,
+    rejected,
   };
+}
+
+/** The API reports whole token counts; anything else is treated as "not reported" rather than guessed. */
+function tokenUsage(value: unknown): TokenUsage | null {
+  const u = value as { input_tokens?: unknown; output_tokens?: unknown } | null | undefined;
+  const whole = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= 1e9;
+  return u && whole(u.input_tokens) && whole(u.output_tokens) ? { input: u.input_tokens, output: u.output_tokens } : null;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -215,6 +264,16 @@ export async function callVision(
   body: ReturnType<typeof buildVisionRequest>,
   timeoutMs = 90_000,
 ): Promise<unknown> {
+  return (await callVisionWithUsage(fetchFn, apiKey, body, timeoutMs)).output;
+}
+
+/** The same call, also returning the input and output tokens the API reports for it. */
+export async function callVisionWithUsage(
+  fetchFn: FetchLike,
+  apiKey: string,
+  body: ReturnType<typeof buildVisionRequest>,
+  timeoutMs = 90_000,
+): Promise<VisionResult> {
   let response: Response;
   try {
     response = await fetchFn("https://api.anthropic.com/v1/messages", {
@@ -242,5 +301,5 @@ export async function callVision(
       (block as { name?: unknown }).name === VISION_TOOL.name,
   ) as { input?: unknown } | undefined;
   if (!call) throw new VisionError("BAD_RESPONSE");
-  return call.input;
+  return { output: call.input, usage: tokenUsage((data as { usage?: unknown }).usage) };
 }

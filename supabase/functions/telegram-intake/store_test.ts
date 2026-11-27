@@ -70,25 +70,34 @@ Deno.test("the daily call cap is taken through the database function", async () 
 });
 
 Deno.test("a read is stored as parsed values only, row by row, with the matched fixture", async () => {
-  const { fn, seen } = recorder(json([{ id: "intake-uuid" }]), json(null));
+  const { fn, seen } = recorder(json([{ id: "intake-uuid" }]), json(null), json(null), json(null));
   const store = new PostgrestStore("https://p.example", KEY, fn);
   const id = await store.saveIntake(
-    { updateId: 5, ticketDate: "2026-11-26", sourceKind: "PDF", bookmaker: "BookX", model: "m", rowsRead: 2, rowsKept: 2, rowsMatched: 1 },
+    {
+      updateId: 5, kind: "TICKET", inputTokens: 900, outputTokens: 80, pendingUploadId: null, fileSha256: "a".repeat(64),
+      ticketDate: "2026-11-26", sourceKind: "PDF", bookmaker: "BookX", model: "m", rowsRead: 2, rowsKept: 2, rowsMatched: 1,
+    },
     [
-      { row: { home_team: "A", away_team: "B", kickoff_at: "2026-11-26T12:00:00.000Z", home_odds: 2, draw_odds: 3, away_odds: 4 }, fixtureId: "f1", reason: null },
+      { row: { home_team: "A", away_team: "B", kickoff_at: "2026-11-26T12:00:00.000Z", home_odds: 2, draw_odds: 3, away_odds: 4 }, fixtureId: "f1", reason: null, via: "EXACT" },
       { row: { home_team: "C", away_team: "D", kickoff_at: null, home_odds: null, draw_odds: null, away_odds: null }, fixtureId: null, reason: "NO_KICKOFF" },
     ],
+    [{ position: 3, home: "X", away: "X", reason: "SAME_TEAM" }],
   );
   assert.equal(id, "intake-uuid");
   assert.deepEqual(Object.keys(seen[0].body as object).sort(), [
-    "bookmaker_label", "rows_kept", "rows_matched", "rows_read", "source_kind", "ticket_date", "update_id", "vision_model",
+    "bookmaker_label", "input_tokens", "kind", "output_tokens", "pending_upload_id", "rows_kept", "rows_matched", "rows_read",
+    "source_kind", "ticket_date", "update_id", "vision_model",
   ]);
   const rows = seen[1].body as Record<string, unknown>[];
   assert.deepEqual(rows.map((r) => r.position), [1, 2]);
   assert.deepEqual(rows.map((r) => r.matched_fixture_id), ["f1", null]);
   assert.deepEqual(Object.keys(rows[0]).sort(), [
-    "away_odds", "away_team", "draw_odds", "home_odds", "home_team", "intake_id", "kickoff_at", "matched_fixture_id", "position",
+    "away_odds", "away_team", "draw_odds", "home_odds", "home_team", "intake_id", "kickoff_at", "match_via", "matched_fixture_id",
+    "position", "read_kind", "unmatched_reason",
   ]);
+  assert.deepEqual(rows.map((r) => [r.match_via, r.unmatched_reason, r.read_kind]), [["EXACT", null, "TICKET"], [null, "NO_KICKOFF", "TICKET"]]);
+  assert.deepEqual(seen[2].body, [{ intake_id: "intake-uuid", position: 3, home_team: "X", away_team: "X", reason: "SAME_TEAM" }]);
+  assert.deepEqual(seen[3].body, { file_sha256: "a".repeat(64), intake_id: "intake-uuid" });
 });
 
 Deno.test("rule events are appended in order and an activation touches no other rule", async () => {
@@ -156,15 +165,17 @@ Deno.test("a failed request is a StoreError without the response body, URL or ke
   }
 });
 
-Deno.test("Telegram: replies are plain text, clipped, and a file over the cap is not downloaded", async () => {
-  const { fn, seen } = recorder(json({ ok: true }), json({ ok: true, result: { file_path: "photos/x.jpg", file_size: 20_000_000 } }));
+Deno.test("Telegram: replies are plain text, split rather than cut, and a file over the cap is not downloaded", async () => {
+  const { fn, seen } = recorder(json({ ok: true }), json({ ok: true }), json({ ok: true, result: { file_path: "photos/x.jpg", file_size: 20_000_000 } }));
   const tg = new TelegramHttp("123:TOKEN-PLACEHOLDER", fn);
   await tg.send("42", "x".repeat(5000));
   const sent = seen[0].body as { chat_id: string; text: string; parse_mode?: string };
+  const rest = seen[1].body as { text: string };
   assert.equal(sent.text.length, 4000);
+  assert.equal(sent.text.length + rest.text.length, 5000, "the whole reply is delivered");
   assert.equal(sent.parse_mode, undefined); // no markup: nothing read from a screenshot can become formatting
   assert.equal(await tg.download("file-1", 10 * 1024 * 1024), null);
-  assert.equal(seen.length, 2); // getFile only: the oversized file was never fetched
+  assert.equal(seen.length, 3); // two message parts and getFile only: the oversized file was never fetched
 });
 
 Deno.test("Telegram menu sync: nothing is written when the menu already matches, the exact list is set when it differs", async () => {
@@ -236,4 +247,60 @@ Deno.test("Telegram: a download is returned in memory and a body larger than the
   assert.match(small.seen[1].url, /\/file\/bott\/docs\/a\.pdf$/);
   const big = recorder(json({ ok: true, result: { file_path: "docs/a.pdf" } }), new Response(new Uint8Array(20)));
   assert.equal(await new TelegramHttp("t", big.fn).download("f", 10), null);
+});
+
+Deno.test("a pending upload is stored as a file id only, and read back through the view that hides expired and used ones", async () => {
+  const { fn, seen } = recorder(
+    json(null),
+    json([{ id: "p1", update_id: 77, file_id: "AgAD-file", file_type: "PDF", file_size: 4321, expires_at: "2026-11-26T10:00:00+00:00" }]),
+    json([]),
+  );
+  const store = new PostgrestStore("https://p.example", KEY, fn);
+  await store.savePending({ updateId: 77, fileId: "AgAD-file", fileType: "PDF", fileSize: 4321 });
+  assert.equal(new URL(seen[0].url).pathname, "/rest/v1/intake_pending_uploads");
+  assert.deepEqual(seen[0].body, { update_id: 77, file_id: "AgAD-file", file_type: "PDF", file_size: 4321 }, "no expiry sent: the database sets 60 minutes");
+  const pending = await store.latestPending();
+  assert.deepEqual(pending, { id: "p1", updateId: 77, fileId: "AgAD-file", fileType: "PDF", fileSize: 4321, expiresAt: "2026-11-26T10:00:00.000Z" });
+  const url = new URL(seen[1].url);
+  assert.equal(url.pathname, "/rest/v1/intake_pending_upload", "the view, not the table: only the newest, unexpired, unused row");
+  assert.equal(url.searchParams.get("limit"), "1");
+  assert.equal(await store.latestPending(), null);
+});
+
+Deno.test("a repeat file is found by its SHA-256 and its stored rows and rejected rows come back as the read", async () => {
+  const sha = "b".repeat(64);
+  const { fn, seen } = recorder(
+    json([{ intake_id: "i-1" }]),
+    json([{ bookmaker_label: "BookX", rows_read: 3 }]),
+    json([{ home_team: "A", away_team: "B", kickoff_at: "2026-11-26T12:00:00+00:00", home_odds: 2, draw_odds: "3.1", away_odds: 4 }]),
+    json([{ position: 3, home_team: "C", away_team: "C", reason: "SAME_TEAM" }]),
+    json([]),
+  );
+  const store = new PostgrestStore("https://p.example", KEY, fn);
+  const read = await store.findRead(sha);
+  assert.deepEqual(read, {
+    intakeId: "i-1",
+    bookmaker: "BookX",
+    rowsRead: 3,
+    rows: [{ home_team: "A", away_team: "B", kickoff_at: "2026-11-26T12:00:00.000Z", home_odds: 2, draw_odds: 3.1, away_odds: 4 }],
+    rejected: [{ position: 3, home: "C", away: "C", reason: "SAME_TEAM" }],
+  });
+  assert.equal(new URL(seen[0].url).searchParams.get("file_sha256"), `eq.${sha}`);
+  assert.ok(seen.every((s) => !s.url.includes("file_id")), "only the hash is used, never the file");
+  assert.equal(await store.findRead("c".repeat(64)), null, "an unknown hash is no earlier read");
+});
+
+Deno.test("today's usage is read from the usage row and one read's tokens are added through the database function", async () => {
+  const { fn, seen } = recorder(
+    json([{ vision_calls: 4, input_tokens: 90_000, output_tokens: 5_000 }]),
+    json([]),
+    json(null),
+  );
+  const store = new PostgrestStore("https://p.example", KEY, fn);
+  assert.deepEqual(await store.usageToday("2026-11-26"), { calls: 4, tokens: 95_000 });
+  assert.equal(new URL(seen[0].url).searchParams.get("usage_date"), "eq.2026-11-26");
+  assert.deepEqual(await store.usageToday("2026-11-27"), { calls: 0, tokens: 0 }, "a day with no row has used nothing");
+  await store.addTokens("2026-11-26", 1200, 300);
+  assert.equal(new URL(seen[2].url).pathname, "/rest/v1/rpc/intake_add_tokens");
+  assert.deepEqual(seen[2].body, { p_date: "2026-11-26", p_input: 1200, p_output: 300 });
 });

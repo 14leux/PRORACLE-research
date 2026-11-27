@@ -15,7 +15,7 @@ COMMANDS_TS = (FUNCTION / "commands.ts").read_text(encoding="utf-8")
 class IntakeDocsTests(unittest.TestCase):
     def test_every_command_and_limit_in_the_function_is_in_the_doc(self) -> None:
         usages = re.findall(r'usage: "([^"]+)"', COMMANDS_TS)
-        self.assertEqual(len(usages), 9)
+        self.assertEqual(len(usages), 11)  # ticket_file, ticket, slate, rule, retire, yes, no, rules, today, scoreboard, help
         for usage in usages:
             self.assertIn(f"`{usage}`", DOC, usage)
 
@@ -40,6 +40,7 @@ class IntakeDocsTests(unittest.TestCase):
         migrations = ROOT / "supabase" / "migrations"
         intake = (migrations / "20261127000000_proracle_intake.sql").read_text(encoding="utf-8")
         multi = (migrations / "20261128000000_proracle_multi_rule.sql").read_text(encoding="utf-8")
+        slate = (migrations / "20261129000000_proracle_ticket_slate.sql").read_text(encoding="utf-8")
         store = (FUNCTION / "store.ts").read_text(encoding="utf-8")
         adapter = (ROOT / "proracle" / "supabase_adapter.py").read_text(encoding="utf-8")
         for view in ("intake_active_rules", "intake_pending_retirement", "intake_scoreboard"):
@@ -52,12 +53,42 @@ class IntakeDocsTests(unittest.TestCase):
         for event in events | {"PROPOSED"}:
             self.assertIn(f"'{event}'", multi, event)
         actions = set(re.findall(r'^\s*\| "([A-Z_]+)"', store.split("export type AuditAction")[1].split(";")[0], re.M))
-        self.assertGreaterEqual(len(actions), 13)
+        self.assertGreaterEqual(len(actions), 17)
+        # the newest check constraint is the tickets-and-slates one: every action the code writes must be in it
         for action in actions:
-            self.assertIn(f"'{action}'", multi, action)
+            self.assertIn(f"'{action}'", slate, action)
+        for action in ("SLATE", "PENDING", "REUSED", "TOKEN_CAP"):
+            self.assertIn(action, actions)
         # everything the older migration allowed is still allowed
         for action in re.findall(r"'([A-Z_]+)'", intake.split("action text not null check (action in (")[1].split("))")[0]):
             self.assertIn(f"'{action}'", multi, action)
+
+    def test_everything_the_function_writes_for_tickets_and_slates_exists_in_the_migration(self) -> None:
+        migration = (ROOT / "supabase" / "migrations" / "20261129000000_proracle_ticket_slate.sql").read_text(encoding="utf-8")
+        store = (FUNCTION / "store.ts").read_text(encoding="utf-8")
+        for name in (
+            "intake_pending_uploads", "intake_pending_upload", "intake_file_hashes", "intake_rejected_rows", "intake_add_tokens",
+            "pending_upload_id", "read_kind", "match_via", "unmatched_reason", "input_tokens", "output_tokens", "file_sha256",
+        ):
+            self.assertIn(name, store, f"the store no longer uses {name}")
+            self.assertIn(name, migration, f"the migration lacks {name}")
+        for reason in re.findall(r'"(NOT_A_FIXTURE|MISSING_TEAM|SAME_TEAM|OVER_LIMIT)"', (FUNCTION / "vision.ts").read_text(encoding="utf-8")):
+            self.assertIn(f"'{reason}'", migration, reason)
+
+    def test_the_documented_ticket_and_slate_limits_match_the_code_and_the_migration(self) -> None:
+        migration = (ROOT / "supabase" / "migrations" / "20261129000000_proracle_ticket_slate.sql").read_text(encoding="utf-8")
+        self.assertIn("export const SLATE_MAX_ROWS = 100;", COMMANDS_TS)
+        self.assertIn("export const PENDING_UPLOAD_MINUTES = 60;", COMMANDS_TS)
+        self.assertIn("export const DEFAULT_TOKEN_BUDGET = 2_000_000;", COMMANDS_TS)
+        self.assertIn("rows_kept between 0 and 100", migration)
+        self.assertIn("interval '60 minutes'", migration)
+        for text in ("up to 100 rows", "kept 60 minutes", "refused, never cut", "2,000,000", "SHA-256", "Telegram file id", "/slate", "/today"):
+            self.assertIn(text, DOC, text)
+        policy = (ROOT / "docs" / "DATA_POLICY.md").read_text(encoding="utf-8")
+        for text in ("Telegram file id", "SHA-256", "never stores or publishes the file"):
+            self.assertIn(text, policy, text)
+        index = (FUNCTION / "index.ts").read_text(encoding="utf-8")
+        self.assertIn('intEnv("INTAKE_DAILY_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET', index)
 
     def test_every_secret_the_function_reads_is_documented_and_none_is_a_literal(self) -> None:
         index = (FUNCTION / "index.ts").read_text(encoding="utf-8")
