@@ -131,7 +131,7 @@ begin
     if n <> 2 then raise exception 'the older insert shape no longer works'; end if;
     select kind into got from proracle.intake_tickets where id = read_old;
     if got.kind <> 'TICKET' then raise exception 'an older read must default to TICKET'; end if;
-    if proracle.intake_reserve_call(current_date, 5) is not true then raise exception 'intake_reserve_call broke'; end if;
+    if proracle.intake_reserve_call(date '2031-01-15', 5) is not true then raise exception 'intake_reserve_call broke'; end if;
     perform 1 from proracle.intake_active_rule;
     perform 1 from proracle.intake_active_rules;
     perform 1 from proracle.intake_pending_rule;
@@ -388,18 +388,18 @@ begin
 
     -- 9. Ticket kickoff and review times; the send-once review ----------------------------------------------
     insert into proracle.tickets (id, ticket_date, ticket_kind, design_version, seed, pool_size, fixture_count, frozen_at, last_kickoff_at, review_due_at)
-    values (tk, current_date - 5, 'SIMULATED', 'sim-v1', 's', 1, 1, now() - interval '6 days', now() - interval '5 days', now() - interval '4 days');
+    values (tk, current_date - 5, 'SIMULATED', 'verify-v1', 's', 1, 1, now() - interval '6 days', now() - interval '5 days', now() - interval '4 days');
     insert into proracle.tickets (id, ticket_date, ticket_kind, design_version, seed, pool_size, fixture_count, frozen_at)
-    values (tk_old, current_date - 40, 'SIMULATED', 'sim-v1', 's', 1, 1, now() - interval '41 days');
+    values (tk_old, current_date - 40, 'SIMULATED', 'verify-v1', 's', 1, 1, now() - interval '41 days');
     begin
         insert into proracle.tickets (ticket_date, ticket_kind, design_version, seed, pool_size, fixture_count, frozen_at, last_kickoff_at)
-        values (current_date - 1, 'SIMULATED', 'sim-v2', 's', 1, 1, now() - interval '2 days', now());
+        values (current_date - 1, 'SIMULATED', 'verify-v2', 's', 1, 1, now() - interval '2 days', now());
         raise exception 'a last kickoff without a review time was accepted';
     exception when check_violation then null;
     end;
     begin
         insert into proracle.tickets (ticket_date, ticket_kind, design_version, seed, pool_size, fixture_count, frozen_at, last_kickoff_at, review_due_at)
-        values (current_date - 1, 'SIMULATED', 'sim-v3', 's', 1, 1, now() - interval '2 days', now(), now() - interval '1 hour');
+        values (current_date - 1, 'SIMULATED', 'verify-v3', 's', 1, 1, now() - interval '2 days', now(), now() - interval '1 hour');
         raise exception 'a review time before the last kickoff was accepted';
     exception when check_violation then null;
     end;
@@ -443,7 +443,7 @@ begin
     end;
     -- the function may read reviews but not write them
     execute 'set local role service_role';
-    if (select count(*) from proracle.ticket_reviews) <> 1 then raise exception 'service_role cannot read reviews'; end if;
+    if (select count(*) from proracle.ticket_reviews where ticket_id = tk) <> 1 then raise exception 'service_role cannot read reviews'; end if;
     begin
         insert into proracle.ticket_reviews (ticket_id, completeness, picks_total, picks_settled, summary)
         values (tk_old, 'COMPLETE', 1, 1, '{}');
@@ -491,13 +491,13 @@ begin
         (f2, 'FINAL', 'DRAW', now() - interval '40 days' + interval '3 hours', now() - interval '40 days' + interval '3 hours', 'synthetic');
     insert into proracle.ticket_fixtures (ticket_id, fixture_id, position) values (tk, f1, 1), (tk_old, f2, 1);
     insert into proracle.ticket_arm_picks (ticket_id, fixture_id, arm, arm_version, pick, source_prediction_id, kickoff_at, frozen_at) values
-        (tk, f1, 'A', 'test-model', 'HOME_WIN', pred1, now() - interval '5 days', now() - interval '6 days'),
-        (tk_old, f2, 'A', 'test-model', 'HOME_WIN', pred2, now() - interval '40 days', now() - interval '41 days');
+        (tk, f1, 'A', 'verify-a', 'HOME_WIN', pred1, now() - interval '5 days', now() - interval '6 days'),
+        (tk_old, f2, 'A', 'verify-a', 'HOME_WIN', pred2, now() - interval '40 days', now() - interval '41 days');
     insert into proracle.ticket_arm_picks (ticket_id, fixture_id, arm, arm_version, pick, forced, kickoff_at, frozen_at) values
-        (tk, f1, 'C', 'draw-score-v1', 'DRAW', true, now() - interval '5 days', now() - interval '6 days'),
-        (tk_old, f2, 'C', 'draw-score-v1', 'DRAW', true, now() - interval '40 days', now() - interval '41 days');
+        (tk, f1, 'C', 'verify-c', 'DRAW', true, now() - interval '5 days', now() - interval '6 days'),
+        (tk_old, f2, 'C', 'verify-c', 'DRAW', true, now() - interval '40 days', now() - interval '41 days');
     execute 'set local role service_role';
-    for got in select * from proracle.intake_recent_window where ticket_kind = 'SIMULATED' order by arm, window_name loop
+    for got in select * from proracle.intake_recent_window where ticket_kind = 'SIMULATED' and arm_version like 'verify-%' order by arm, window_name loop
         if got.arm = 'A' and got.window_name = 'RECENT' and (got.picks_settled, got.picks_right, got.a_right_same_fixtures) <> (1, 1, 1) then
             raise exception 'arm A recent window wrong'; end if;
         if got.arm = 'A' and got.window_name = 'PRIOR' and (got.picks_settled, got.picks_right, got.a_right_same_fixtures) <> (1, 0, 0) then
@@ -507,7 +507,7 @@ begin
         if got.arm = 'C' and got.window_name = 'PRIOR' and (got.picks_settled, got.picks_right, got.a_right_same_fixtures) <> (1, 1, 0) then
             raise exception 'arm C prior window wrong'; end if;
     end loop;
-    if (select count(*) from proracle.intake_recent_window where ticket_kind = 'SIMULATED') <> 4 then
+    if (select count(*) from proracle.intake_recent_window where ticket_kind = 'SIMULATED' and arm_version like 'verify-%') <> 4 then
         raise exception 'the recent window should have arms A and C in both windows';
     end if;
     execute 'reset role';
@@ -515,7 +515,7 @@ begin
     insert into proracle.fixtures (id, home_team, away_team, kickoff_at, source_name, source_event_key)
     values ('00000000-0000-4000-8000-0000000000f4', 'Old', 'Older', now() - interval '70 days', 'synthetic', 'ts-4');
     insert into proracle.tickets (id, ticket_date, ticket_kind, design_version, seed, pool_size, fixture_count, frozen_at)
-    values ('00000000-0000-4000-8000-0000000000d4', current_date - 70, 'SIMULATED', 'sim-v1', 's', 1, 1, now() - interval '71 days');
+    values ('00000000-0000-4000-8000-0000000000d4', current_date - 70, 'SIMULATED', 'verify-v1', 's', 1, 1, now() - interval '71 days');
     insert into proracle.ticket_fixtures (ticket_id, fixture_id, position)
     values ('00000000-0000-4000-8000-0000000000d4', '00000000-0000-4000-8000-0000000000f4', 1);
     insert into proracle.predictions (
@@ -526,9 +526,9 @@ begin
     insert into proracle.results (fixture_id, status, actual_outcome, observed_at, finalized_at, source_name)
     values ('00000000-0000-4000-8000-0000000000f4', 'FINAL', 'DRAW', now() - interval '70 days', now() - interval '70 days', 'synthetic');
     insert into proracle.ticket_arm_picks (ticket_id, fixture_id, arm, arm_version, pick, source_prediction_id, kickoff_at, frozen_at)
-    values ('00000000-0000-4000-8000-0000000000d4', '00000000-0000-4000-8000-0000000000f4', 'A', 'test-model', 'DRAW', '00000000-0000-4000-8000-0000000000c4', now() - interval '70 days', now() - interval '71 days');
+    values ('00000000-0000-4000-8000-0000000000d4', '00000000-0000-4000-8000-0000000000f4', 'A', 'verify-a', 'DRAW', '00000000-0000-4000-8000-0000000000c4', now() - interval '70 days', now() - interval '71 days');
     execute 'set local role service_role';
-    if (select count(*) from proracle.intake_recent_window where ticket_kind = 'SIMULATED') <> 4 then
+    if (select count(*) from proracle.intake_recent_window where ticket_kind = 'SIMULATED' and arm_version like 'verify-%') <> 4 then
         raise exception 'a pick older than 56 days must not appear';
     end if;
     execute 'reset role';
