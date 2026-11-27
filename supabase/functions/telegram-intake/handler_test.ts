@@ -143,7 +143,8 @@ Deno.test("names tied to a stored name by an earlier ticket are remembered; a me
   kit.setVision({ fixtures: [row("Hearts", "Monaco")] });
   kit.store.fixtures = [fixture("f1", "Heart of Midlothian", "AS Monaco", KICKOFF)];
   await post(kit, fileMessage("photo"));
-  assert.match(kit.tg.texts, /1 matched through names I remembered from earlier tickets\./);
+  // CHANGED EXPECTATION (built-in seed names, DECISION 238): the line now also covers the built-in list
+  assert.match(kit.tg.texts, /1 matched through names I knew \(remembered from earlier tickets, or on my built-in list\)\./);
   assert.doesNotMatch(kit.tg.texts, /name similarity/);
   assert.deepEqual(kit.store.intakes[0].rows.map((r) => r.via), ["ALIAS"]);
 
@@ -152,7 +153,9 @@ Deno.test("names tied to a stored name by an earlier ticket are remembered; a me
   noMemory.setVision({ fixtures: [row("Alpha", "Beta"), row("Hearts", "Monaco")] });
   noMemory.store.fixtures = [fixture("f1", "Alpha", "Beta", KICKOFF), fixture("f2", "Heart of Midlothian", "AS Monaco", KICKOFF)];
   await post(noMemory, fileMessage("photo"));
-  assert.match(noMemory.tg.texts, /Matched 1, unmatched 1/); // the exact one still matches; "Hearts" is not guessed without memory
+  // CHANGED EXPECTATION (built-in seed names and the one-team match, DECISION 238): without the memory the exact
+  // row still matches, and "Hearts" is now matched from the built-in list instead of being left unmatched.
+  assert.match(noMemory.tg.texts, /Matched 2, unmatched 0/);
   assert.equal(noMemory.store.audits.find((a) => a.action === "TICKET")!.outcome, "OK");
   assert.ok(
     noMemory.store.audits.some((a) => a.action === "ERROR" && a.detail === "matching memory unreadable"),
@@ -267,14 +270,29 @@ Deno.test("an unmatched fixture is reported and never guessed", async () => {
     fixture("f-mu", "Manchester United", "Chelsea", KICKOFF), // a near name must still not match
   ];
   await post(kit, fileMessage("photo"));
+  // CHANGED EXPECTATION (one-team match, DECISION 238): "Chelsea" fits that fixture exactly, so "Manchester Utd" is
+  // matched by one team and kickoff and listed back for checking, not left out. The rest of this test is unchanged.
   const rows = kit.store.intakes[0].rows;
   assert.equal(rows[0].fixtureId, "f-alpha");
-  assert.equal(rows[1].fixtureId, null);
-  assert.equal(rows[1].reason, "NO_MATCH");
-  assert.match(kit.tg.texts, /Matched 1, unmatched 1/);
-  assert.match(kit.tg.texts, /Manchester Utd v Chelsea \(no stored fixture with these names and time\)/);
+  assert.deepEqual([rows[1].fixtureId, rows[1].via], ["f-mu", "ANCHOR"]);
+  assert.match(kit.tg.texts, /Matched 2, unmatched 0/);
+  assert.match(kit.tg.texts, /- Manchester Utd v Chelsea = Manchester United v Chelsea/);
   assert.deepEqual(kit.dispatched, ["intake-1"]);
-  assert.equal(kit.store.intakes[0].ticket.rowsMatched, 1);
+  assert.equal(kit.store.intakes[0].ticket.rowsMatched, 2);
+
+  // the original assertions, with the one-team rule switched off by the setting
+  const off = makeKit({ anchorMatching: false });
+  off.setVision({ fixtures: [row("Alpha FC", "Beta", "15:00"), row("Manchester Utd", "Chelsea", "15:00")] });
+  off.store.fixtures = [fixture("f-alpha", "Alpha", "Beta", KICKOFF), fixture("f-mu", "Manchester United", "Chelsea", KICKOFF)];
+  await post(off, fileMessage("photo"));
+  const offRows = off.store.intakes[0].rows;
+  assert.equal(offRows[0].fixtureId, "f-alpha");
+  assert.equal(offRows[1].fixtureId, null);
+  assert.equal(offRows[1].reason, "NO_MATCH");
+  assert.match(off.tg.texts, /Matched 1, unmatched 1/);
+  assert.match(off.tg.texts, /Manchester Utd v Chelsea \(no stored fixture with these names and time\)/);
+  assert.deepEqual(off.dispatched, ["intake-1"]);
+  assert.equal(off.store.intakes[0].ticket.rowsMatched, 1);
 });
 
 Deno.test("when nothing matches nothing is computed", async () => {

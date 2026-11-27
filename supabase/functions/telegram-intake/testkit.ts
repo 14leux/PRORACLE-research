@@ -203,6 +203,7 @@ export function makeKit(overrides: Partial<Deps> = {}): Kit {
     dailyCap: 10,
     model: "claude-sonnet-5-5",
     utcOffsetMinutes: 180,
+    anchorMatching: true,
     store,
     telegram: tg,
     vision: (body) => {

@@ -277,10 +277,19 @@ Deno.test("matching levels: exact beats remembered beats loose, ties are ambiguo
   assert.deepEqual([ambiguous.fixtureId, ambiguous.reason, ambiguous.via], [null, "AMBIGUOUS", null]);
   assert.deepEqual([late.fixtureId, late.reason], [null, "NO_MATCH"]);
   assert.deepEqual([swapped.fixtureId, swapped.reason], [null, "NO_MATCH"]);
-  assert.deepEqual([none.fixtureId, none.reason], [null, "NO_MATCH"]);
-  // an alias pointing at a different team than the one stored is ignored
-  const [wrongAlias] = matchRows([mk("Hearts", "Monaco")], [fixture("x", "Hibernian", "AS Monaco", "2026-11-26T12:00:00Z")], aliases);
+  // CHANGED EXPECTATION (one-team match, DECISION 238): the away name fits exactly one fixture, so the home name
+  // is taken as another spelling of that fixture's home team. The original "no match" still holds with the rule off.
+  assert.deepEqual([none.fixtureId, none.via], ["brighton", "ANCHOR"]);
+  assert.deepEqual(
+    [matchRows([mk("Brighton Rovers", "Universitatea Craiova")], stored, aliases, { anchor: false })[0].fixtureId],
+    [null],
+  );
+  // an alias pointing at a different team than the one stored is ignored (with the one-team rule off)
+  const wrongTeam = [fixture("x", "Hibernian", "AS Monaco", "2026-11-26T12:00:00Z")];
+  const [wrongAlias] = matchRows([mk("Hearts", "Monaco")], wrongTeam, aliases, { anchor: false });
   assert.equal(wrongAlias.fixtureId, null);
+  // CHANGED EXPECTATION: with the rule on, "Monaco" still fits that fixture's away side, so it is matched by one team
+  assert.deepEqual([matchRows([mk("Hearts", "Monaco")], wrongTeam, aliases)[0].fixtureId], ["x"]);
 });
 
 Deno.test("the matching memory keeps only names that always led to the same stored name", () => {
