@@ -1,0 +1,79 @@
+# Review of screenshot tickets that are fully settled or 36 hours past their last kickoff (docs/TICKETS.md).
+#
+# Started by hand only (`workflow_dispatch`). It has no schedule: a schedule would send messages to a person
+# unattended, so it is added in a separate one-line change after the first report has been seen working.
+# Same rules as the runtime workflow (docs/MAINTAINING.md):
+#   - never a pull request, `pull_request_target` or `workflow_run` trigger
+#   - secrets live in the `production` environment, which is limited to the `main` branch
+#   - the database credential is the restricted `proracle_runtime` role token, never a service-role key
+#   - every action is pinned to a full commit SHA, and dispatched values reach the script only through
+#     `env:`, never by interpolation into `run:`
+#   - logs carry counts only: a dry run prints no fixture names (this repository's logs are public)
+name: Ticket review
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: work out the reviews but send and record nothing (true or false)"
+        required: true
+        type: boolean
+        default: true
+      frozen_after:
+        description: "Only tickets frozen after this time (ISO, e.g. 2026-11-28T12:00:00Z); empty uses the PRORACLE_REVIEW_FROZEN_AFTER variable"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ticket-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Review settled tickets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Review due tickets and send one Telegram report each (standard library only)
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FROZEN_AFTER_INPUT: ${{ github.event.inputs.frozen_after }}
+          PRORACLE_REVIEW_FROZEN_AFTER: ${{ vars.PRORACLE_REVIEW_FROZEN_AFTER }}
+          PRORACLE_DB_SCHEMA: proracle
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.PRORACLE_RUNTIME_JWT }}
+          SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -- python -m proracle.review
+          if [ "$DRY_RUN" != "false" ]; then set -- "$@" --dry-run; fi
+          if [ -n "$FROZEN_AFTER_INPUT" ]; then set -- "$@" --frozen-after "$FROZEN_AFTER_INPUT"; fi
+          "$@"
+
+      - name: Notify failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl --silent --show-error --max-time 20 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=PRORACLE FAILURE - ticket review. Run: ${RUN_URL}" > /dev/null
