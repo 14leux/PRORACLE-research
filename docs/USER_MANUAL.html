@@ -163,7 +163,7 @@ footer { padding-top: 2rem; color: var(--muted); font-size: 0.9rem; border-top: 
   </header>
 </div>
 <nav class="toc" aria-label="Sections"><div class="wrap">
-  <a href="#idea">Idea</a><a href="#players">Players</a><a href="#new">What is new</a><a href="#play">Play along</a><a href="#builder">Rule builder</a>
+  <a href="#idea">Idea</a><a href="#players">Players</a><a href="#new">What is new</a><a href="#play">Play along</a><a href="#tickets">Tickets and slates</a><a href="#builder">Rule builder</a>
   <a href="#when">When</a><a href="#data">See the data</a><a href="#learn">Learning</a><a href="#read">Reading</a><a href="#stuck">Stuck?</a><a href="#card">Cheat sheet</a>
 </div></nav>
 
@@ -228,6 +228,10 @@ footer { padding-top: 2rem; color: var(--muted); font-size: 0.9rem; border-top: 
       <tr><td><code>/scoreboard</code> upgrade</td><td>Shows every player side by side, with a margin of error and a warning when there are too few results.</td></tr>
       <tr><td><b>Name memory</b></td><td>The bot remembers team-name spellings that worked before, so each PDF gets easier.</td></tr>
       <tr><td><b>Clearer replies</b></td><td>The second Telegram message no longer repeats the unmatched list, and says how many rows were left out.</td></tr>
+      <tr><td><b>Ticket or slate?</b></td><td>Every file you send is now one of two things, and the bot asks which if you do not say. You answer with <code>/ticket</code> or <code>/slate</code>. See <a href="#tickets">Tickets and slates</a>.</td></tr>
+      <tr><td><code>/today</code></td><td>Shows today's tickets and every player's picks. It is the new name of what the ticket command used to do.</td></tr>
+      <tr><td><b>Review after the games</b></td><td>When a ticket's games are over, the bot sends one report on how each player did.</td></tr>
+      <tr><td><code>/eli5</code></td><td>The report card in plain words.</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -239,7 +243,7 @@ footer { padding-top: 2rem; color: var(--muted); font-size: 0.9rem; border-top: 
     <li>
       <div class="head"><h3>See what you can do</h3></div>
       <div class="body">
-        <div class="chat"><div class="msg me">/help</div><div class="msg bot"><small>Bot</small>What you can do: ... /rule, /retire, YES, NO, /rules, /ticket, /scoreboard ...</div></div>
+        <div class="chat"><div class="msg me">/help</div><div class="msg bot"><small>Bot</small>What you can do: ... /ticket, /slate, /rule, /retire, YES, NO, /rules, /today, /scoreboard, /eli5 ...</div></div>
         <p class="why">The new buttons (like <code>/retire</code>) show up in Telegram's menu after your first message following today's update.</p>
       </div>
     </li>
@@ -287,7 +291,7 @@ Active rules: v1 (1 of 5). It applies to tickets frozen from now on.</div>
     <li>
       <div class="head"><h3>Send a PDF of fixtures</h3></div>
       <div class="body">
-        <p>Attach the PDF or a screenshot. The bot reads it (one of your 10 reads for the day), then replies twice.</p>
+        <p>Attach the PDF or a screenshot and write <b>ticket</b> in the caption. (With no caption the bot asks "ticket or slate?" first; see <a href="#tickets">Tickets and slates</a>.) The bot reads it (one of your 10 reads for the day), then replies twice.</p>
         <div class="chat">
           <div class="msg bot"><small>Bot, message 1</small>Read 41 row(s); using 20. Matched 10, unmatched 10 ...
 Computing arms A, C and B1, B2, B3, B4 (one per active rule) now; the frozen picks follow in this chat.</div>
@@ -341,6 +345,63 @@ It would no longer be used on tickets frozen from now on; its earlier picks stay
           <div class="msg bot"><small>Bot</small>Rule v2 is retired (arm B2). Its earlier picks stay and are still scored. Active rules: v1, v3, v4.</div>
         </div>
         <p class="why">The slot is free again. Start a new rule and it gets the next version number (v5), so a new name and a fresh count from zero.</p>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section id="tickets">
+  <h2>Tickets and slates, the review and <code>/eli5</code></h2>
+  <p class="say">Every photo, image file or PDF you send is one of two things. You say which, or the bot asks.</p>
+  <div class="grid g2">
+    <div class="card"><h3>A ticket</h3><p>A slip you declared: <b>up to 20 fixtures</b>. The bot matches the games, then locks the picks of A, C and every rule <b>before kickoff</b>. Tickets are what the report card scores.</p></div>
+    <div class="card"><h3>A slate</h3><p>A long list, <b>up to 100 fixtures</b>, for testing the rating model. The bot matches and stores it. <b>Nothing is locked, no player picks, and it never touches the report card.</b></p></div>
+  </div>
+  <ol class="steps">
+    <li>
+      <div class="head"><h3>"Is this a ticket or a slate?"</h3></div>
+      <div class="body">
+        <div class="chat">
+          <div class="msg me">(you send a PDF with no caption)</div>
+          <div class="msg bot"><small>Bot</small>Is this a ticket or a slate?
+- Ticket: a slip you declared, up to 20 rows. I match it, freeze arms A, B and C before kickoff and review it after the games.
+- Slate: any size, up to 100 rows. I match and store it for testing models; nothing is frozen and it stays off the scoreboard.
+Reply /ticket or /slate within 60 minutes. ...</div>
+          <div class="msg me">/slate</div>
+        </div>
+        <p class="why">Asking costs nothing: the file is not opened, read or counted against today's limits until you answer. The bot keeps only the Telegram reference to your latest upload, for 60 minutes. To skip the question, put the word <code>ticket</code> or <code>slate</code> in the caption.</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>Over 20 rows is never cut</h3></div>
+      <div class="body">
+        <p class="say">If you call a list a ticket but it has more than 20 fixtures, the bot refuses it and points you to <code>/slate</code>. It never quietly keeps the first 20. Answer <code>/slate</code> and the same upload is stored in full.</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>The review after the games</h3></div>
+      <div class="body">
+        <p class="say">The ticket reply tells you its <b>last kickoff</b> and its <b>review time</b> (36 hours after the last kickoff, or sooner once every game has a result), in UTC and Nairobi time. When that comes, the bot sends <b>one report per ticket</b>: how each player did, which picks were forced or reversed, what really happened in each game, and the rating model beside the bookmakers' favourite where prices were printed. If some games have no result yet, the report says which. Each report shows when the results were read, because results can be corrected later. A ticket is reviewed once, never twice.</p>
+        <p class="why">Results arrive through the scheduled runs, so a result can be up to about 12 hours late. Only tickets sent after the review was switched on are reviewed.</p>
+      </div>
+    </li>
+    <li>
+      <div class="head"><h3>The report card in plain words</h3></div>
+      <div class="body">
+        <div class="chat">
+          <div class="msg me">/eli5</div>
+          <div class="msg bot"><small>Bot (example numbers only)</small>Here is how the picks are doing, in plain words. ...
+
+Simulated tickets:
+- A, the rating model: right 52 of 100 in the last 28 days (52%).
+- B1, your rule v1: right 64 of 100 in the last 28 days (64%).
+  Working: it is ahead of A by 12.0 points on the same 100 matches, more than the ±10 points of noise I allow for.
+- B2, your rule v2: right 3 of 8 in the last 28 days (38%).
+  Too early to tell: only 8 settled picks, and I wait for 20.
+
+This is a calibration report card. It is not betting advice.</div>
+        </div>
+        <p class="why">The bot says <b>working</b> or <b>dropping</b> only when a player has at least 20 settled picks in the last 28 days and is ahead of or behind A by more than the margin of error. Anything else is "too early to tell". Once some slate games have finished, one extra line says how often the rating model's pick was right on them. It never talks about money.</p>
       </div>
     </li>
   </ol>
@@ -570,6 +631,8 @@ limit 30;</pre>
       <tr><td>Nothing is waiting for YES</td><td>No proposal is open, or it expired after 60 minutes.</td><td>Send the <code>/rule</code> or <code>/retire</code> again.</td></tr>
       <tr><td>Answer YES or NO to what is already waiting first</td><td>Only one question can wait at a time.</td><td>Answer YES or NO.</td></tr>
       <tr><td>Rule v9 is not active</td><td>That version is not in the active list.</td><td><code>/rules</code> shows the right numbers.</td></tr>
+      <tr><td>Is this a ticket or a slate?</td><td>You sent a file with no ticket or slate in the caption. Nothing has been read yet.</td><td>Reply <code>/ticket</code> or <code>/slate</code> within 60 minutes, or put the word in the caption next time.</td></tr>
+      <tr><td>That file has 35 fixtures and a ticket holds at most 20. I did not cut it and nothing was stored.</td><td>A ticket holds at most 20 fixtures and the bot never cuts a list.</td><td>Reply <code>/slate</code> to keep all of it for testing the model.</td></tr>
       <tr><td>No settled ticket picks yet</td><td>Games have not finished, or the next scheduled run has not recorded them.</td><td>Wait for the next 08:37 or 20:37 run.</td></tr>
       <tr><td>The reading service did not accept or answer that request</td><td>The PDF read failed on the vendor side.</td><td>Try again later. Nothing was frozen.</td></tr>
       <tr><td>The daily limit of 10 screenshot reads is used up. It resets at 00:00 UTC.</td><td>You have used the 10 PDF reads for the UTC day (03:00 Nairobi time).</td><td>Wait for the reset. Commands like <code>/rules</code> still work.</td></tr>
@@ -590,13 +653,16 @@ limit 30;</pre>
       <tr><td><code>/rules</code></td><td>Lists the active rules and anything waiting.</td></tr>
       <tr><td><code>/today</code></td><td>Today's tickets and every player's picks.</td></tr>
       <tr><td><code>/scoreboard</code></td><td>The report card, per ticket kind.</td></tr>
-      <tr><td>send a PDF or photo</td><td>Reads up to 20 fixtures, matches them, freezes A, C and every rule before kickoff.</td></tr>
+      <tr><td><code>/eli5</code></td><td>The report card in plain words: working, dropping or too early to tell.</td></tr>
+      <tr><td>send a PDF or photo</td><td>Say ticket or slate in the caption, or the bot asks which it is and reads nothing yet.</td></tr>
+      <tr><td><code>/ticket</code></td><td>Answers "which is this?": read the waiting upload as a ticket (up to 20 fixtures, picks locked before kickoff, reviewed after the games). More than 20 is refused, never cut.</td></tr>
+      <tr><td><code>/slate</code></td><td>Answers "which is this?": read the waiting upload as a slate (up to 100 fixtures, for testing the model, nothing locked, off the report card).</td></tr>
       <tr><td><code>/help</code></td><td>Commands, limits and what the bot cannot do.</td></tr>
     </tbody>
   </table></div>
   <div class="grid g2">
     <div class="card"><h3>Rule words</h3><p><code>N draws</code> (1 to 10)<br><code>N upsets by margin</code> or <code>by odds</code><br><code>only League, League</code> or <code>skip League</code> (not both)</p></div>
-    <div class="card"><h3>Limits</h3><p>5 rules at once. 20 fixtures per PDF ticket. 10 PDF reads per UTC day. Files up to 10 MB. Daily ticket from 10 games, up to 20. Waiting questions expire after 60 minutes.</p></div>
+    <div class="card"><h3>Limits</h3><p>5 rules at once. 20 fixtures per ticket, 100 per slate. 10 file reads per UTC day, and a daily reading budget far above a normal day. Files up to 10 MB. Daily ticket from 10 games, up to 20. A "ticket or slate?" question waits 60 minutes, and only your latest upload is kept.</p></div>
   </div>
   <div class="card"><h3>What the bot will never do</h3><p>Change the model or arm A. Put odds into A or C. Give stake, bankroll or profit advice. Start or stop a rule without your YES. Answer any chat but yours.</p></div>
 </section>
