@@ -24,7 +24,8 @@ export type AuditAction =
   | "SLATE"
   | "PENDING"
   | "REUSED"
-  | "TOKEN_CAP";
+  | "TOKEN_CAP"
+  | "ELI5";
 export type AuditOutcome = "OK" | "REFUSED" | "ERROR";
 
 export interface RuleRecord {
@@ -116,6 +117,32 @@ export interface ScoreRow {
   a_right_on_adjusted: number;
 }
 
+/**
+ * One arm's settled picks in one window of intake_recent_window: RECENT is the last 28 days, PRIOR the 28 before.
+ * Counts only, on complete tickets, with what arm A picked on exactly the same fixtures.
+ */
+export interface RecentRow {
+  ticket_kind: string;
+  arm: string;
+  arm_version: string;
+  window_name: "RECENT" | "PRIOR";
+  picks_settled: number;
+  picks_right: number;
+  a_right_same_fixtures: number;
+}
+
+/** The one row of intake_slate_score: counts of settled slate fixtures, each counted once. */
+export interface SlateScoreRow {
+  slate_reads: number;
+  fixtures: number;
+  settled: number;
+  model_hits: number;
+  /** Settled fixtures where all three prices were printed, and how often the model and the market favourite were right on them. */
+  compared: number;
+  compared_model_hits: number;
+  compared_market_hits: number;
+}
+
 export interface IntakeStore {
   /** False when this Telegram update id was already handled (a retried delivery). */
   claimUpdate(updateId: number, kind: UpdateKind): Promise<boolean>;
@@ -149,6 +176,10 @@ export interface IntakeStore {
   declineRetirement(rule: RuleRecord, updateId: number): Promise<void>;
   ticketsForDate(date: string): Promise<TicketSummary[]>;
   scoreboard(): Promise<ScoreRow[]>;
+  /** The last 28 days against the 28 before, per arm and ticket kind (the view intake_recent_window). */
+  recentWindow(): Promise<RecentRow[]>;
+  /** Settled slate counts (the view intake_slate_score); null while there is no row to read. */
+  slateScore(): Promise<SlateScoreRow | null>;
 }
 
 export class StoreError extends Error {
@@ -510,5 +541,15 @@ export class PostgrestStore implements IntakeStore {
   async scoreboard(): Promise<ScoreRow[]> {
     const rows = await this.rest("GET", "intake_scoreboard", { query: [["select", "*"]] });
     return Array.isArray(rows) ? (rows as ScoreRow[]) : [];
+  }
+
+  async recentWindow(): Promise<RecentRow[]> {
+    const rows = await this.rest("GET", "intake_recent_window", { query: [["select", "*"]] });
+    return Array.isArray(rows) ? (rows as RecentRow[]) : [];
+  }
+
+  async slateScore(): Promise<SlateScoreRow | null> {
+    const rows = await this.rest("GET", "intake_slate_score", { query: [["select", "*"]] });
+    return Array.isArray(rows) && rows.length > 0 ? (rows[0] as SlateScoreRow) : null;
   }
 }

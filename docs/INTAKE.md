@@ -32,8 +32,9 @@ Everything below comes from one list in `supabase/functions/telegram-intake/comm
 | `YES` | Confirms what was last asked about: activates the proposed rule, or retires the rule asked about (it waits 60 minutes). |
 | `NO` | Cancels the proposed rule, or the retirement asked about. |
 | `/rules` | Shows every active rule and any proposal or retirement waiting. |
-| `/today` | Shows today's tickets and each arm's picks (this was `/ticket` before tickets and slates). |
+| `/today` | Shows today's tickets and each arm's picks. |
 | `/scoreboard` | Hit rate of each arm and each rule on settled ticket picks, with what arms A and C picked on the same fixtures and a rough margin of error, labelled a calibration report card. |
+| `/eli5` | How the picks are doing, in plain words: each arm over the last 28 days beside arm A on the same matches. An arm is called working or dropping only with at least 20 settled picks and a gap from A bigger than the margin of error; otherwise it says too early to tell. One line on slates is added once some have settled. Built from counts with templates and no model call, and never about stakes or profit. See [Reading `/eli5`](#reading-eli5). |
 | `/help` | Shows the list, the limits and what the bot cannot do. |
 
 **Limits:** at most 20 fixtures per ticket (a longer one is refused, never cut, with a pointer to `/slate`); a slate holds up to 100 rows; at most 10 vision reads per UTC day (`INTAKE_DAILY_CALL_CAP`); at most 2,000,000 reading tokens per UTC day (`INTAKE_DAILY_TOKEN_BUDGET`); files up to 10 MB; an upload waiting for your answer is kept 60 minutes; rows that cannot be matched are reported and not used; at most 5 rules active at once.
@@ -94,6 +95,14 @@ A stored read is one of two kinds, and you say which.
 
 **Repeat uploads:** the SHA-256 of the file's bytes is stored with the read. The same file sent again reuses the stored rows: no new vision call, nothing from the call cap, no tokens. Only the hash is kept, never the file. The reused rows are matched again and stored as the kind you asked for this time.
 
+## Reading `/eli5`
+
+`/eli5` is the scoreboard in plain words. It reads three things the database already holds, with no model call and no new writes: the per-arm scoreboard (`intake_scoreboard`, since the start), the recent window (`intake_recent_window`: the last 28 days against the 28 before, on settled picks of complete tickets, with what arm A picked on the same fixtures) and the settled slate counts (`intake_slate_score`).
+
+- **Working or dropping.** For each arm other than A, over the last 28 days: if it has fewer than 20 settled picks, the message says too early to tell. With 20 or more, the gap from arm A on the same matches (in points) is compared with the margin of error `/scoreboard` already shows (`98 / sqrt(n)` points). Ahead by more than the margin is working, behind by more than the margin is dropping, and anything inside the margin is too early to tell. The 28 days before are shown beside it as context and never decide the verdict. Arm A is the yardstick and is never judged.
+- **Slates.** One line, only once slates have settled: how often the rating model's pick was right on the settled slate matches (each counted once however many uploads hold it) and, where all three prices were printed, the market's favourite beside the model. Counts only. If the slate view cannot be read the rest of the message still arrives.
+- **Never.** No stakes, bankroll, profit or advice on what to back; the message ends by saying it is a calibration report card and not betting advice.
+
 ## Data policy
 
 - The image or PDF is read in memory and **never stored** by this project. It is sent to the Anthropic API for the read; Anthropic's own retention terms apply to that request, so check them before use.
@@ -106,7 +115,7 @@ A stored read is one of two kinds, and you say which.
 
 You need your own Telegram bot, Anthropic key and Supabase project. Nothing here is shared with the maintainer.
 
-1. **Apply the migrations** (`supabase/migrations/`, in order, including `20261126000000_proracle_p0_capture.sql`, `20261127000000_proracle_intake.sql` and `20261128000000_proracle_multi_rule.sql`) to your project. Review them first; they only add `proracle` tables, views and one function. Add `proracle` to the exposed schemas.
+1. **Apply the migrations** (`supabase/migrations/`, in order, including `20261126000000_proracle_p0_capture.sql`, `20261127000000_proracle_intake.sql` and `20261128000000_proracle_multi_rule.sql`, `20261129000000_proracle_ticket_slate.sql` and `20261130000000_proracle_slate_score.sql`) to your project. Review them first; they only add `proracle` tables, views and one function. Add `proracle` to the exposed schemas.
 2. **Telegram.** Create a bot with `@BotFather`. Send it one message from your account and read your chat id with `getUpdates` **before** you register a webhook ([OPERATIONS.md](OPERATIONS.md)). Choose a long random webhook secret.
 3. **Anthropic.** Create a key in its own workspace with a spend limit (limits apply per workspace, not per key). Use a dedicated key for this function only.
 4. **GitHub token.** Create a fine-grained token for **this one repository** with the single permission *Actions: read and write* and a short expiry. It can start the `Ticket intake` workflow and nothing else. In a fork, also set `GITHUB_REPOSITORY`.
@@ -144,3 +153,5 @@ deno test --no-prompt --no-remote supabase/functions/telegram-intake/
 The Python side is covered by `tests/test_ticket_mode.py`. To prove the migration on a disposable local database, follow [DATABASE.md](DATABASE.md) and run `supabase/tests/verify_intake.sql` and `supabase/tests/verify_multi_rule.sql` with `psql` inside the local database container; `supabase/tests/intake_catalog_fingerprint.sql` run before and after re-applying the migration must give identical output.
 
 The code for tickets and slates (caption marker, the question, the pending upload, the 20-row refusal, token budget, hash reuse, split replies) is covered by `ticket_slate_test.ts` beside the other function tests. The tickets-and-slates migration (`20261129000000_proracle_ticket_slate.sql`) is proved the same way with `supabase/tests/verify_ticket_slate.sql` and `supabase/tests/ticket_slate_catalog_fingerprint.sql`. It only adds: nothing the deployed function or the workflows read is removed, and it is safe to apply before the code that uses it. Its rollback, `supabase/tests/rollback_ticket_slate.sql`, removes only what it added, refuses to run if that would delete stored data (unless `-v allow_data_loss=1`), and must be tried on a database copy first. Apply the migration to production first, then merge, then redeploy.
+
+`/eli5` is covered by `eli5_test.ts`. Its read-only view comes from the slate-score migration (`20261130000000_proracle_slate_score.sql`), proved with `supabase/tests/verify_slate_score.sql` and `supabase/tests/slate_score_catalog_fingerprint.sql`; it adds one view and nothing else, and its rollback, `supabase/tests/rollback_slate_score.sql`, drops only that view. As with the previous migration, apply it to production first, then merge, then redeploy.

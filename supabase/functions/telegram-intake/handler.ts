@@ -26,6 +26,7 @@ import {
   PENDING_UPLOAD_MINUTES,
   SLATE_MAX_ROWS,
 } from "./commands.ts";
+import { buildEli5, marginPoints } from "./eli5.ts";
 import { buildAliases, MATCH_WINDOW_MS, matchRows, type MatchedRow, seedAliases } from "./matching.ts";
 import { canonicalRule, describeRule, parseRule } from "./rules.ts";
 import type { AuditAction, AuditOutcome, DayUsage, IntakeStore, ReadKind, RuleRecord, ScoreRow, StoredRead, UpdateKind } from "./store.ts";
@@ -143,7 +144,7 @@ export function compareArms(a: string, b: string): number {
 const versionsOf = (rules: readonly RuleRecord[]): string => rules.map((r) => `v${r.version}`).join(", ");
 
 // A rough 95% margin of error for one hit rate (1.96 * sqrt(p(1-p)/n) with p = 0.5, in points).
-const margin = (n: number): string => `±${Math.round(98 / Math.sqrt(n))} pts`;
+const margin = (n: number): string => `±${marginPoints(n)} pts`;
 const MIN_SETTLED_NOTE = 20;
 
 type Route = (ctx: Ctx) => Promise<void>;
@@ -365,6 +366,21 @@ const scoreboard: Route = async (c) => {
       : [];
     await c.reply([...lines, ...scoreLines(kind, rows.filter((r) => r.ticket_kind === kind))].join("\n"));
   }
+};
+
+/** /eli5: the performance message in plain words, from the scoreboard, the recent-window view and the slate counts. */
+const eli5: Route = async (c) => {
+  const [score, recent] = await Promise.all([c.deps.store.scoreboard(), c.deps.store.recentWindow()]);
+  // The slate line is a bonus: if its view cannot be read, the rest of the message still goes out.
+  let slate = null;
+  let slateNote = "";
+  try {
+    slate = await c.deps.store.slateScore();
+  } catch {
+    slateNote = " (slate counts unavailable)";
+  }
+  await c.audit("ELI5", "OK", `arms=${new Set(score.map((r) => r.arm_version)).size}${slateNote}`);
+  await c.reply(buildEli5(score, recent, slate));
 };
 
 interface FileRef {
@@ -667,6 +683,7 @@ export const ROUTES: Record<string, Route> = {
   slate: answerKind("SLATE"),
   today,
   scoreboard,
+  eli5,
   help,
 };
 

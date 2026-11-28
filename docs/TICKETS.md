@@ -44,6 +44,10 @@ A **ticket** sent through the Telegram intake ([INTAKE.md](INTAKE.md)) is a decl
 
 **Scoring slates** (`python -m proracle.slate`, counts only, writes nothing). Each distinct matched fixture counts once however many slates hold it. After settlement the rating model's earliest pre-kickoff pick is scored against the result, and on fixtures where all three prices were printed the model is set against the de-vigged market (its favourite, and the probability each gave the result that happened). Calibration tracking only, not betting advice.
 
+**Where the slate score is stored.** The read-only view `proracle.intake_slate_score` (migration `20261130000000_proracle_slate_score.sql`) gives the same counts in one row: slate reads, distinct matched fixtures, settled ones, the rating model's hits, and on settled fixtures with all three prices the model's and the market favourite's hits. Only the intake function's role reads it; it holds no names, prices or stakes. It feeds the one slate line of `/eli5` ([INTAKE.md](INTAKE.md#reading-eli5)). The `python -m proracle.slate` command stays as the way to read the numbers from a terminal.
+
+**Reading the arms in plain words.** `/eli5` reads the scoreboard and the recent window (the last 28 days against the 28 before; `proracle.intake_recent_window`) and calls an arm working or dropping only with at least 20 settled picks and a gap from arm A larger than the scoreboard's margin of error; otherwise it says too early to tell.
+
 ## Switching it on
 
 Set the switch in the runtime's environment to exactly `1` (any other value leaves the step off):

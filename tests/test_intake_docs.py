@@ -15,7 +15,7 @@ COMMANDS_TS = (FUNCTION / "commands.ts").read_text(encoding="utf-8")
 class IntakeDocsTests(unittest.TestCase):
     def test_every_command_and_limit_in_the_function_is_in_the_doc(self) -> None:
         usages = re.findall(r'usage: "([^"]+)"', COMMANDS_TS)
-        self.assertEqual(len(usages), 11)  # ticket_file, ticket, slate, rule, retire, yes, no, rules, today, scoreboard, help
+        self.assertEqual(len(usages), 12)  # ticket_file, ticket, slate, rule, retire, yes, no, rules, today, scoreboard, eli5, help
         for usage in usages:
             self.assertIn(f"`{usage}`", DOC, usage)
 
@@ -89,6 +89,30 @@ class IntakeDocsTests(unittest.TestCase):
             self.assertIn(text, policy, text)
         index = (FUNCTION / "index.ts").read_text(encoding="utf-8")
         self.assertIn('intEnv("INTAKE_DAILY_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET', index)
+
+    def test_everything_eli5_reads_exists_in_the_migrations_and_is_documented(self) -> None:
+        migrations = ROOT / "supabase" / "migrations"
+        ticket_slate = (migrations / "20261129000000_proracle_ticket_slate.sql").read_text(encoding="utf-8")
+        slate_score = (migrations / "20261130000000_proracle_slate_score.sql").read_text(encoding="utf-8")
+        store = (FUNCTION / "store.ts").read_text(encoding="utf-8")
+        # the function reads three views; each must be created by a migration and granted to the function's role
+        for view, text in (
+            ("intake_scoreboard", (migrations / "20261128000000_proracle_multi_rule.sql").read_text(encoding="utf-8")),
+            ("intake_recent_window", ticket_slate),
+            ("intake_slate_score", slate_score),
+        ):
+            self.assertIn(f'"{view}"', store, f"the store no longer reads {view}")
+            self.assertIn(f"create or replace view proracle.{view} with (security_invoker = true)", text, view)
+        self.assertIn("grant select on table proracle.intake_slate_score to service_role;", slate_score)
+        self.assertNotIn("proracle_runtime", slate_score.split("revoke all privileges")[1].split("grant select")[1])
+        self.assertIn("'ELI5'", ticket_slate)  # the audit action /eli5 writes
+        self.assertIn("| `/eli5` |", DOC)  # its row in the command table, not only a mention elsewhere
+        for text in ("/eli5", "20 settled picks", "too early to tell", "28 days", "no model call", "20261130000000_proracle_slate_score.sql"):
+            self.assertIn(text, DOC, text)
+        eli5 = (FUNCTION / "eli5.ts").read_text(encoding="utf-8")
+        self.assertIn("MIN_SETTLED_FOR_VERDICT = 20;", eli5)
+        self.assertNotIn("fetch(", eli5)  # built from templates and counts: no network, no model call
+        self.assertNotRegex(eli5, r"anthropic|vision", )
 
     def test_every_secret_the_function_reads_is_documented_and_none_is_a_literal(self) -> None:
         index = (FUNCTION / "index.ts").read_text(encoding="utf-8")

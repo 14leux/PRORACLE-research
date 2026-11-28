@@ -13,7 +13,9 @@ import type {
   StoredRead,
   IntakeStore,
   RuleRecord,
+  RecentRow,
   ScoreRow,
+  SlateScoreRow,
   TicketSummary,
   UpdateKind,
 } from "./store.ts";
@@ -47,6 +49,8 @@ export class FakeStore implements IntakeStore {
   events: string[] = [];
   tickets: TicketSummary[] = [];
   score: ScoreRow[] = [];
+  recent: RecentRow[] = [];
+  slate: SlateScoreRow | null = null;
   failOn: string | null = null;
   touched = 0;
 
@@ -210,6 +214,16 @@ export class FakeStore implements IntakeStore {
   scoreboard(): Promise<ScoreRow[]> {
     this.guard("scoreboard");
     return Promise.resolve(this.score);
+  }
+
+  recentWindow(): Promise<RecentRow[]> {
+    this.guard("recentWindow");
+    return Promise.resolve(this.recent);
+  }
+
+  slateScore(): Promise<SlateScoreRow | null> {
+    this.guard("slateScore");
+    return Promise.resolve(this.slate);
   }
 }
 

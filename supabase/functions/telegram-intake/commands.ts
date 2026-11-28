@@ -88,6 +88,13 @@ export const COMMANDS: readonly CommandSpec[] = [
       "Hit rate of each arm and each rule on settled ticket picks, with what arms A and C picked on the same fixtures and a rough margin of error. A calibration report card, not evidence of an edge.",
     menu: "Arm and rule hit rates on settled picks",
   },
+  {
+    name: "eli5",
+    usage: "/eli5",
+    summary:
+      "How the picks are doing, in plain words: each arm over the last 28 days beside arm A on the same matches. I call an arm working or dropping only with at least 20 settled picks and a gap from A bigger than the margin of error; otherwise I say too early to tell. Adds one line on slates once some have settled. Built from counts with no model call, and never about stakes or profit.",
+    menu: "How the picks are doing, in plain words",
+  },
   { name: "help", usage: "/help", summary: "Show this list.", menu: "What I can do, limits and what I cannot do" },
 ];
 
