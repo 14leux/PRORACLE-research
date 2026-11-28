@@ -95,14 +95,19 @@ class IntakeDocsTests(unittest.TestCase):
         ticket_slate = (migrations / "20261129000000_proracle_ticket_slate.sql").read_text(encoding="utf-8")
         slate_score = (migrations / "20261130000000_proracle_slate_score.sql").read_text(encoding="utf-8")
         store = (FUNCTION / "store.ts").read_text(encoding="utf-8")
-        # the function reads three views; each must be created by a migration and granted to the function's role
+        windows = (migrations / "20261202000000_proracle_window_ticket_views.sql").read_text(encoding="utf-8")
+        # the function reads four views; each must be created by a migration, run as the caller, and be read by the store
         for view, text in (
             ("intake_scoreboard", (migrations / "20261128000000_proracle_multi_rule.sql").read_text(encoding="utf-8")),
-            ("intake_recent_window", ticket_slate),
+            ("intake_window_summary", windows),
+            ("intake_ticket_hits", windows),
             ("intake_slate_score", slate_score),
         ):
             self.assertIn(f'"{view}"', store, f"the store no longer reads {view}")
             self.assertIn(f"create or replace view proracle.{view} with (security_invoker = true)", text, view)
+        self.assertNotIn('"intake_recent_window"', store)  # the older window view stays in the database but is no longer read
+        self.assertIn("grant select on table proracle.intake_window_summary, proracle.intake_ticket_hits to service_role;", windows)
+        self.assertNotIn("proracle_runtime", windows.split("revoke all privileges")[1].split("grant select")[1])
         self.assertIn("grant select on table proracle.intake_slate_score to service_role;", slate_score)
         self.assertNotIn("proracle_runtime", slate_score.split("revoke all privileges")[1].split("grant select")[1])
         self.assertIn("'ELI5'", ticket_slate)  # the audit action /eli5 writes
@@ -111,6 +116,17 @@ class IntakeDocsTests(unittest.TestCase):
             self.assertIn(text, DOC, text)
         eli5 = (FUNCTION / "eli5.ts").read_text(encoding="utf-8")
         self.assertIn("MIN_SETTLED_FOR_VERDICT = 20;", eli5)
+        # the spike thresholds in the code are the ones the docs and the manual state
+        for constant in (
+            "SPIKE_MIN_TICKET_PICKS = 8;", "SPIKE_MIN_BASELINE_TICKETS = 3;", "SPIKE_MIN_BASELINE_PICKS = 40;",
+            "SPIKE_STANDARD_ERRORS = 2;", "SPIKE_MAX_SHOWN = 5;", "SPIKE_DAYS = 28;",
+        ):
+            self.assertIn(constant, eli5, constant)
+        for text in ("last 7 days", "unusually high", "at least 8 settled picks", "at least 3 other tickets", "at least 40 settled picks", "more than 2 standard errors", "At most 5", "`20261202000000_proracle_window_ticket_views.sql`) to your project", "1 ticket in 20"):
+            self.assertIn(text, DOC, text)
+        tickets_doc = (ROOT / "docs" / "TICKETS.md").read_text(encoding="utf-8")
+        for text in ("intake_window_summary", "intake_ticket_hits", "2 standard errors"):
+            self.assertIn(text, tickets_doc, text)
         self.assertNotIn("fetch(", eli5)  # built from templates and counts: no network, no model call
         self.assertNotRegex(eli5, r"anthropic|vision", )
 
@@ -120,6 +136,10 @@ class IntakeDocsTests(unittest.TestCase):
         for view in ("intake_scoreboard", "intake_recent_window"):
             self.assertIn(f"create or replace view proracle.{view} with (security_invoker = true)", text, view)
         self.assertEqual(text.count("having count(*) <> t.fixture_count"), 2)  # both views carry the rule
+        windows = (migrations / "20261202000000_proracle_window_ticket_views.sql").read_text(encoding="utf-8")
+        self.assertEqual(windows.count("having count(*) <> t.fixture_count"), 2)  # and so do the two new views
+        self.assertEqual(windows.count("p.arm = 'A')"), 2)
+        self.assertEqual(windows.count("p.arm = 'C')"), 2)
         self.assertEqual(text.count("p.arm = 'A')"), 2)
         self.assertEqual(text.count("p.arm = 'C')"), 2)
         self.assertIsNone(re.search(r"^\s*(grant|revoke)\b", text, re.M | re.I))  # no privilege change: only definitions are replaced

@@ -118,17 +118,31 @@ export interface ScoreRow {
 }
 
 /**
- * One arm's settled picks in one window of intake_recent_window: RECENT is the last 28 days, PRIOR the 28 before.
- * Counts only, on complete tickets, with what arm A picked on exactly the same fixtures.
+ * One arm's settled picks in one window of intake_window_summary: LAST7 is the last 7 days, LAST28 the last 28
+ * (it contains LAST7), PRIOR28 the 28 before those. Counts only, on complete tickets, with what arm A picked
+ * on exactly the same fixtures.
  */
-export interface RecentRow {
+export interface WindowRow {
   ticket_kind: string;
   arm: string;
   arm_version: string;
-  window_name: "RECENT" | "PRIOR";
+  window_name: "LAST7" | "LAST28" | "PRIOR28";
   picks_settled: number;
   picks_right: number;
   a_right_same_fixtures: number;
+}
+
+/** One complete ticket's arm in intake_ticket_hits: settled and right picks, and the latest settled kickoff. */
+export interface TicketHitRow {
+  ticket_id: string;
+  ticket_kind: string;
+  ticket_date: string;
+  arm: string;
+  arm_version: string;
+  fixture_count: number;
+  picks_settled: number;
+  picks_right: number;
+  last_kickoff_at: string;
 }
 
 /** The one row of intake_slate_score: counts of settled slate fixtures, each counted once. */
@@ -176,8 +190,10 @@ export interface IntakeStore {
   declineRetirement(rule: RuleRecord, updateId: number): Promise<void>;
   ticketsForDate(date: string): Promise<TicketSummary[]>;
   scoreboard(): Promise<ScoreRow[]>;
-  /** The last 28 days against the 28 before, per arm and ticket kind (the view intake_recent_window). */
-  recentWindow(): Promise<RecentRow[]>;
+  /** The last 7 days, the last 28 and the 28 before, per arm and ticket kind (the view intake_window_summary). */
+  windowSummary(): Promise<WindowRow[]>;
+  /** Settled and right picks per complete ticket and arm (the view intake_ticket_hits), for ticket spikes. */
+  ticketHits(): Promise<TicketHitRow[]>;
   /** Settled slate counts (the view intake_slate_score); null while there is no row to read. */
   slateScore(): Promise<SlateScoreRow | null>;
 }
@@ -543,9 +559,14 @@ export class PostgrestStore implements IntakeStore {
     return Array.isArray(rows) ? (rows as ScoreRow[]) : [];
   }
 
-  async recentWindow(): Promise<RecentRow[]> {
-    const rows = await this.rest("GET", "intake_recent_window", { query: [["select", "*"]] });
-    return Array.isArray(rows) ? (rows as RecentRow[]) : [];
+  async windowSummary(): Promise<WindowRow[]> {
+    const rows = await this.rest("GET", "intake_window_summary", { query: [["select", "*"]] });
+    return Array.isArray(rows) ? (rows as WindowRow[]) : [];
+  }
+
+  async ticketHits(): Promise<TicketHitRow[]> {
+    const rows = await this.rest("GET", "intake_ticket_hits", { query: [["select", "*"]] });
+    return Array.isArray(rows) ? (rows as TicketHitRow[]) : [];
   }
 
   async slateScore(): Promise<SlateScoreRow | null> {

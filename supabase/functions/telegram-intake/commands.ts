@@ -92,7 +92,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "eli5",
     usage: "/eli5",
     summary:
-      "How the picks are doing, in plain words: each arm over the last 28 days beside arm A on the same matches. I call an arm working or dropping only with at least 20 settled picks and a gap from A bigger than the margin of error; otherwise I say too early to tell. Adds one line on slates once some have settled. Built from counts with no model call, and never about stakes or profit.",
+      "How the picks are doing, in plain words: each arm over the last 7 and 28 days beside arm A on the same matches, and whether the two agree. Working or dropping only with at least 20 settled picks in a window and a gap from A bigger than the margin of error; otherwise too early to tell. Points out tickets with an unusually high or low hit rate. Adds a slate line once slates settle. No model call, never about stakes or profit.",
     menu: "How the picks are doing, in plain words",
   },
   { name: "help", usage: "/help", summary: "Show this list.", menu: "What I can do, limits and what I cannot do" },

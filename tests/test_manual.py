@@ -66,6 +66,10 @@ class ManualTests(unittest.TestCase):
             "too early to tell",
             "at least 20 settled picks",
             "never touches the report card",
+            "last 7 days",
+            "This week differs from the month",
+            "Tickets that stood out",
+            "not enough tickets yet",
         ):
             self.assertIn(text, MANUAL, text)
 
