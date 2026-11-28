@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
 FORBIDDEN_TRIGGERS = ("pull_request_target", "workflow_run")
-SECRET_WORKFLOWS = ("runtime.yml", "ticket_intake.yml")
+SECRET_WORKFLOWS = ("runtime.yml", "ticket_intake.yml", "ticket_review.yml")
 USES = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S+)", re.MULTILINE)
 SHA_PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 
@@ -47,7 +47,7 @@ class WorkflowRulesTest(unittest.TestCase):
                 self.assertRegex(text, r"(?m)^    environment: production$", path.name)
                 triggers = text.split("\njobs:")[0].split("\non:")[1]
                 self.assertNotIn("pull_request", triggers, path.name)
-                if path.name == "ticket_intake.yml":
+                if path.name in ("ticket_intake.yml", "ticket_review.yml"):
                     # started only by the Edge Function's dispatch, never by a push or a schedule
                     self.assertRegex(triggers, r"(?m)^  workflow_dispatch:$")
                     self.assertNotIn("push", triggers)
@@ -61,6 +61,28 @@ class WorkflowRulesTest(unittest.TestCase):
         self.assertIn('--intake-id "$INTAKE_ID"', text)
         self.assertEqual(len(re.findall(r"github\.event\.inputs\.intake_id", text)), 1)
         self.assertNotRegex(text.lower(), r"service_role")
+
+    def test_the_review_workflow_has_no_schedule_starts_by_hand_and_defaults_to_a_dry_run(self) -> None:
+        text = code(ROOT / ".github" / "workflows" / "ticket_review.yml")
+        triggers = text.split("\njobs:")[0].split("\non:")[1]
+        self.assertRegex(triggers, r"(?m)^  workflow_dispatch:$")
+        for forbidden in ("schedule", "cron", "push", "pull_request", "workflow_run", "repository_dispatch"):
+            self.assertNotIn(forbidden, triggers, forbidden)
+        self.assertRegex(triggers, r"(?s)dry_run:.*?default: true")
+        # a dry run is the default, and only an input of exactly "false" sends
+        self.assertIn('if [ "$DRY_RUN" != "false" ]; then set -- "$@" --dry-run; fi', text)
+        self.assertEqual(len(re.findall(r"\bcrons?\b", text)), 0)
+
+    def test_the_review_workflow_takes_its_inputs_only_through_env_and_never_prints_report_text(self) -> None:
+        text = code(ROOT / ".github" / "workflows" / "ticket_review.yml")
+        self.assertIn("DRY_RUN: ${{ github.event.inputs.dry_run }}", text)
+        self.assertIn("FROZEN_AFTER_INPUT: ${{ github.event.inputs.frozen_after }}", text)
+        self.assertEqual(len(re.findall(r"github\.event\.inputs\.dry_run", text)), 1)
+        self.assertEqual(len(re.findall(r"github\.event\.inputs\.frozen_after", text)), 1)
+        self.assertNotIn("--show-text", text)  # this repository's Actions logs are public
+        self.assertNotRegex(text.lower(), r"service_role")
+        self.assertIn("group: ticket-review", text)  # one run at a time
+        self.assertIn("cancel-in-progress: false", text)
 
     def test_ci_runs_the_deno_tests_from_a_checksummed_release_with_no_third_party_action_or_secrets(self) -> None:
         text = code(ROOT / ".github" / "workflows" / "ci.yml")

@@ -29,12 +29,14 @@ from proracle.ticket import (
     FORCED_DRAWS,
     ArmPick,
     Candidate,
+    REVIEW_WAIT,
     DrawCounts,
     Ticket,
     devig,
     draw_score,
     pick_outcome,
     rule_picks,
+    utc_and_eat,
 )
 
 __all__ = ["Rule", "TicketModeError", "parse_rule", "devig"]  # re-exported: the intake tests and callers use them here
@@ -163,6 +165,7 @@ def build_shot_ticket(
         notes.append(note)
 
     ordered = [row for row, _ in included]
+    last_kickoff = max(c.kickoff_at for _, c in included)
     ticket = Ticket(
         ticket_id=intake_ticket_id(intake_id),
         ticket_date=ticket_date,
@@ -174,6 +177,8 @@ def build_shot_ticket(
         design_version=SHOT_DESIGN,
         ticket_kind=SHOT_KIND,
         intake_id=intake_id,
+        last_kickoff_at=last_kickoff,
+        review_due_at=last_kickoff + REVIEW_WAIT,
     )
     return ShotResult(
         ticket=ticket, rows=tuple(ordered), dropped=tuple(dropped), market=market, rule_notes=tuple(notes)
@@ -196,6 +201,11 @@ def format_reply(result: ShotResult) -> str:
         picks.setdefault(p.fixture_id, {})[arm_label(p)] = p
     arms = sorted({arm_label(p) for p in result.ticket.picks}, key=_arm_order)
     lines = [f"Frozen before kickoff: {len(result.ticket.fixtures)} fixture(s), arms {', '.join(arms)}."]
+    if result.ticket.last_kickoff_at is not None and result.ticket.review_due_at is not None:
+        lines.append(f"Last kickoff: {utc_and_eat(result.ticket.last_kickoff_at)}.")
+        lines.append(
+            f"Review due: {utc_and_eat(result.ticket.review_due_at)}, or sooner once every fixture has a result."
+        )
     for fixture_id, row in zip(result.ticket.fixtures, result.rows):
         cells = []
         for arm in arms:
@@ -255,6 +265,11 @@ def run_ticket_mode(
     intake = store.intake_ticket(intake_id)
     if intake is None:
         raise TicketModeError("no stored read has this intake id")
+    if intake.get("kind") == "SLATE":
+        # A slate is stored and matched for testing models only: it never gets frozen picks, so it can never
+        # reach the arm scoreboard. The function never dispatches one; this refuses it if one arrives anyway.
+        summary["slate_ignored"] = 1
+        return summary
     now = now.astimezone(timezone.utc)
     rows = parse_rows(store.intake_rows(intake_id))
     matched_ids = [r.fixture_id for r in rows if r.fixture_id]

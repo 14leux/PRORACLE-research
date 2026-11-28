@@ -41,6 +41,7 @@ _TABLES = frozenset(
         "intake_tickets",
         "intake_ticket_rows",
         "intake_active_rules",  # migration 20261128000000 (several rules at once)
+        "ticket_reviews",  # migration 20261129000000: the runtime role can read and insert (one review per ticket)
     }
 )
 _CANDIDATE_FIXTURE = "fixture:fixtures!predictions_fixture_id_fkey(competition_id,competition_name,status)"
@@ -609,6 +610,190 @@ class SupabaseRESTStore:
             prefer=_IGNORE_DUPLICATES,
         )
 
+    # --- reviews and slate scoring (read-only, plus one append-only review row) ---------------------
+
+    _IN_LIMIT = 40  # ids per request, so a URL never grows past what PostgREST accepts
+
+    def _chunks(self, ids: Sequence[str]) -> list[list[str]]:
+        unique = sorted(set(ids))
+        return [unique[i : i + self._IN_LIMIT] for i in range(0, len(unique), self._IN_LIMIT)]
+
+    def reviewable_tickets(self, frozen_after: datetime) -> list[Mapping[str, Any]]:
+        """Screenshot tickets frozen after `frozen_after`, oldest first, with their kickoff and due times."""
+        return list(
+            self._fetch_all(
+                "tickets",
+                (
+                    ("select", "id,intake_id,frozen_at,fixture_count,last_kickoff_at,review_due_at"),
+                    ("ticket_kind", "eq.SCREENSHOT"),
+                    ("frozen_at", f"gt.{_utc_text(frozen_after)}"),
+                    ("order", "frozen_at.asc,id.asc"),
+                ),
+            )
+        )
+
+    def reviewed_ticket_ids(self) -> set[str]:
+        """Tickets that already have a stored review (the database allows one each)."""
+        rows = self._fetch_all("ticket_reviews", (("select", "ticket_id"), ("order", "id.asc")))
+        ids: set[str] = set()
+        for row in rows:
+            ticket_id = row.get("ticket_id")
+            if not isinstance(ticket_id, str):
+                raise SupabaseStoreError()
+            ids.add(ticket_id)
+        return ids
+
+    def ticket_review_inputs(self, ticket_id: str) -> Mapping[str, Any]:
+        """A ticket's fixtures (in ticket order, with names and kickoffs) and every frozen arm pick."""
+        fixture_rows = self._fetch_all(
+            "ticket_fixtures",
+            (("select", "fixture_id,position"), ("ticket_id", f"eq.{ticket_id}"), ("order", "position.asc")),
+        )
+        picks = self._fetch_all(
+            "ticket_arm_picks",
+            (
+                (
+                    "select",
+                    "fixture_id,arm,arm_version,pick,forced,adjustment,source_prediction_id,kickoff_at",
+                ),
+                ("ticket_id", f"eq.{ticket_id}"),
+                ("order", "fixture_id.asc,arm.asc,arm_version.asc"),
+            ),
+        )
+        names: dict[str, Mapping[str, Any]] = {}
+        for chunk in self._chunks([str(r["fixture_id"]) for r in fixture_rows]):
+            for row in self._fetch_all(
+                "fixtures",
+                (
+                    ("select", "id,home_team,away_team,kickoff_at"),
+                    ("id", f"in.({','.join(chunk)})"),
+                    ("order", "id.asc"),
+                ),
+            ):
+                names[str(row["id"])] = row
+        fixtures = [dict(r, fixture=names.get(str(r["fixture_id"]), {})) for r in fixture_rows]
+        return {"fixtures": fixtures, "picks": picks}
+
+    def current_outcomes(self, fixture_ids: Sequence[str]) -> dict[str, str]:
+        """The current FINAL outcome of each given fixture that has one (corrections resolved)."""
+        versions: list[ResultVersion] = []
+        for chunk in self._chunks(fixture_ids):
+            rows = self._fetch_all(
+                "results",
+                (
+                    (
+                        "select",
+                        f"{self._RESULT_VERSION_COLUMNS},fixture:fixtures!results_fixture_id_fkey(kickoff_at)",
+                    ),
+                    ("fixture_id", f"in.({','.join(chunk)})"),
+                    ("order", "id.asc"),
+                ),
+            )
+            versions.extend(self._result_version(row) for row in rows)
+        try:
+            current, _non_final = current_training_results(versions)
+        except ValueError:
+            raise SupabaseStoreError() from None
+        return {item.fixture_id: item.actual_outcome for item in current}
+
+    def stored_scores(self, fixture_ids: Sequence[str]) -> dict[str, tuple[int, int]]:
+        """Regulation-time scores captured for the given fixtures (some may have none)."""
+        scores: dict[str, tuple[int, int]] = {}
+        for chunk in self._chunks(fixture_ids):
+            for row in self._fetch_all(
+                "match_scores",
+                (
+                    ("select", "fixture_id,home_score,away_score"),
+                    ("fixture_id", f"in.({','.join(chunk)})"),
+                    ("order", "id.asc"),
+                ),
+            ):
+                scores[str(row["fixture_id"])] = (int(row["home_score"]), int(row["away_score"]))
+        return scores
+
+    def prediction_probabilities(self, prediction_ids: Sequence[str]) -> dict[str, tuple[float, float, float]]:
+        """The stored home, draw and away probabilities of the given prediction rows."""
+        out: dict[str, tuple[float, float, float]] = {}
+        for chunk in self._chunks(prediction_ids):
+            for row in self._fetch_all(
+                "predictions",
+                (
+                    ("select", "id,home_win_probability,draw_probability,away_win_probability"),
+                    ("id", f"in.({','.join(chunk)})"),
+                    ("order", "id.asc"),
+                ),
+            ):
+                out[str(row["id"])] = (
+                    float(row["home_win_probability"]),
+                    float(row["draw_probability"]),
+                    float(row["away_win_probability"]),
+                )
+        return out
+
+    def earliest_predictions_any_status(
+        self, fixture_ids: Sequence[str], model_name: str
+    ) -> dict[str, Candidate]:
+        """One model's earliest prediction made before kickoff, whatever the fixture's status now.
+
+        `earliest_predictions` only offers fixtures that are still scheduled, which is right for freezing
+        a ticket; scoring happens after the match, when the status has moved on.
+        """
+        found: dict[str, Candidate] = {}
+        for chunk in self._chunks(fixture_ids):
+            rows = self._fetch_all(
+                "predictions",
+                (
+                    (
+                        "select",
+                        "id,fixture_id,predicted_at,kickoff_at,model_name,home_win_probability,"
+                        "draw_probability,away_win_probability," + _CANDIDATE_FIXTURE,
+                    ),
+                    ("model_name", f"eq.{model_name}"),
+                    ("fixture_id", f"in.({','.join(chunk)})"),
+                    ("order", "predicted_at.asc,id.asc"),
+                ),
+            )
+            for item in self._earliest_candidates(rows, model_name, scheduled_only=False):
+                found[item.fixture_id] = item
+        return found
+
+    def slate_reads(self) -> list[Mapping[str, Any]]:
+        """Every matched slate row with its upload's read time, oldest upload first."""
+        reads = self._fetch_all(
+            "intake_tickets",
+            (("select", "id,received_at"), ("kind", "eq.SLATE"), ("order", "received_at.asc,id.asc")),
+        )
+        read_at = {str(r["id"]): r["received_at"] for r in reads}
+        if not read_at:
+            return []
+        rows = self._fetch_all(
+            "intake_ticket_rows",
+            (
+                ("select", "intake_id,position,matched_fixture_id,home_odds,draw_odds,away_odds"),
+                ("read_kind", "eq.SLATE"),
+                ("matched_fixture_id", "not.is.null"),
+                ("order", "intake_id.asc,position.asc"),
+            ),
+        )
+        return [dict(r, received_at=read_at[str(r["intake_id"])]) for r in rows if str(r["intake_id"]) in read_at]
+
+    def append_review(
+        self, ticket_id: str, completeness: str, picks_total: int, picks_settled: int, summary: Mapping[str, Any]
+    ) -> None:
+        """Record one review. The database refuses a second row for the same ticket."""
+        self._request(
+            "POST",
+            "ticket_reviews",
+            payload={
+                "ticket_id": ticket_id,
+                "completeness": completeness,
+                "picks_total": picks_total,
+                "picks_settled": picks_settled,
+                "summary": dict(summary),
+            },
+            prefer="return=minimal",
+        )
+
     def ticket_exists(self, ticket_date: date, design_version: str) -> bool:
         value, _ = self._request(
             "GET",
@@ -641,7 +826,7 @@ class SupabaseRESTStore:
         return self._earliest_candidates(rows, model_name)
 
     def _earliest_candidates(
-        self, rows: Sequence[Mapping[str, Any]], model_name: str
+        self, rows: Sequence[Mapping[str, Any]], model_name: str, *, scheduled_only: bool = True
     ) -> list[Candidate]:
         """The earliest usable prediction per scheduled fixture; rows must be ordered by predicted_at."""
         pool: dict[str, Candidate] = {}
@@ -650,7 +835,7 @@ class SupabaseRESTStore:
             if not isinstance(fixture, Mapping):
                 raise SupabaseStoreError()
             fixture_id = row.get("fixture_id")
-            if fixture.get("status") != "SCHEDULED" or not isinstance(fixture_id, str):
+            if (scheduled_only and fixture.get("status") != "SCHEDULED") or not isinstance(fixture_id, str):
                 continue
             if fixture_id in pool:
                 continue  # rows are ordered by predicted_at, so the first one seen is the earliest
@@ -708,7 +893,7 @@ class SupabaseRESTStore:
         value, _ = self._request(
             "GET",
             "intake_tickets",
-            query=(("select", "id,ticket_date,bookmaker_label,rows_kept,rows_matched"), ("id", f"eq.{intake_id}")),
+            query=(("select", "id,ticket_date,bookmaker_label,rows_kept,rows_matched,kind"), ("id", f"eq.{intake_id}")),
         )
         rows = self._rows(value)
         return rows[0] if rows else None
@@ -809,6 +994,10 @@ class SupabaseRESTStore:
             # Only a screenshot ticket names its intake, so the daily simulated ticket's payload is
             # unchanged and keeps working on a database without the intake migration.
             head["intake_id"] = ticket.intake_id
+        if ticket.last_kickoff_at is not None and ticket.review_due_at is not None:
+            # Needs the ticket-and-slate migration; set together (the database requires both or neither).
+            head["last_kickoff_at"] = _utc_text(ticket.last_kickoff_at)
+            head["review_due_at"] = _utc_text(ticket.review_due_at)
         self._request("POST", "tickets", payload=head, prefer="return=minimal")
         self._request(
             "POST",

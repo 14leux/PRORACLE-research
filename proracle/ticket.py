@@ -38,6 +38,8 @@ SHRINK_MATCHES = 40
 _NAMESPACE = uuid.UUID("5f0c3d52-7a53-4c5b-9a45-2c7a0b1d9e11")
 
 OUTCOMES = ("HOME_WIN", "DRAW", "AWAY_WIN")
+# A ticket's review falls due this long after its last kickoff, or earlier when every fixture has settled.
+REVIEW_WAIT = timedelta(hours=36)
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,9 @@ class Ticket:
     ticket_kind: str = TICKET_KIND
     # Set for a screenshot ticket: the stored read it was computed from.
     intake_id: str | None = None
+    # Set for a screenshot ticket: when its last fixture kicks off and when its review falls due (UTC).
+    last_kickoff_at: datetime | None = None
+    review_due_at: datetime | None = None
 
 
 class TicketStore(Protocol):
@@ -284,3 +289,12 @@ def run_daily_ticket(store: TicketStore, now: datetime) -> dict[str, int]:
         return summary
     summary["ticket_created"] = 1
     return summary
+
+
+EAT = timezone(timedelta(hours=3), "EAT")  # East Africa Time: UTC+3, no daylight saving
+
+
+def utc_and_eat(moment: datetime) -> str:
+    """One moment in both clocks for messages, e.g. 2030-01-01 12:00 UTC (15:00 EAT)."""
+    utc = moment.astimezone(timezone.utc)
+    return f"{utc:%Y-%m-%d %H:%M} UTC ({utc.astimezone(EAT):%H:%M} EAT)"

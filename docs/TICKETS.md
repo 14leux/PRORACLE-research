@@ -26,6 +26,24 @@ A ticket is a record of what each arm would have picked on a seeded sample of th
 
 The writes are three requests (ticket, its fixtures, its picks), not one transaction. If a later one fails, the ticket row stays with fewer `ticket_fixtures` rows than its `fixture_count`; treat such a ticket as incomplete and ignore it when scoring.
 
+## Tickets, slates and the review
+
+A **ticket** sent through the Telegram intake ([INTAKE.md](INTAKE.md)) is a declared slip of at most 20 rows with frozen arms A, B and C. A **slate** is any size (up to 100 stored rows), matched and kept for testing models; it freezes nothing, creates no ticket, and so can never appear in the arm scoreboard.
+
+**Times.** A ticket stores its last kickoff and its review due time (last kickoff plus 36 hours) in `proracle.tickets`, and the freeze reply shows both in UTC and EAT (UTC+3).
+
+**Where results come from.** Results are captured by the runtime workflow's two daily runs (05:37 and 17:37 UTC; a scheduled run reads the last two days). A result therefore reaches the database up to about 12 hours after a match ends, which is why the review waits 36 hours at most and a "fully settled" ticket can be noticed up to 12 hours late. A 30-minute review check cannot see results sooner than the next run.
+
+**The review** (`python -m proracle.review`, workflow `ticket_review.yml`) looks at screenshot tickets frozen after its activation time. A ticket is reviewed once every fixture has a result, or once its due time has passed. For each one it sends one Telegram report: hits per arm on settled picks, forced and reversed picks, each fixture's actual result (with the score when captured), the rating model against the de-vigged market where all three prices were printed, and, for a partial review, what is still unsettled. Every report states the time its results were read, because results can be corrected later.
+
+- It starts by hand only (`workflow_dispatch`, no schedule) and defaults to a dry run, which prints counts and sends and records nothing. Report text is never printed to the workflow log, because this repository's logs are public.
+- At most three reviews per run, oldest first; the rest wait for the next run. Runs go one at a time.
+- Each review is stored in `proracle.ticket_reviews` (one row per ticket, enforced by the database), so a rerun finds it and sends nothing. The Telegram send comes first, then the row. If the row cannot be stored after a send, the run stops at once so no further message goes out.
+- **Activation time.** Only tickets frozen after it are reviewed, so there is no backlog burst. It comes from the repository variable `PRORACLE_REVIEW_FROZEN_AFTER` (or the `frozen_after` input of a manual run). With neither set, nothing is reviewed.
+- Only screenshot tickets are reviewed. The daily simulated ticket has its own summary.
+
+**Scoring slates** (`python -m proracle.slate`, counts only, writes nothing). Each distinct matched fixture counts once however many slates hold it. After settlement the rating model's earliest pre-kickoff pick is scored against the result, and on fixtures where all three prices were printed the model is set against the de-vigged market (its favourite, and the probability each gave the result that happened). Calibration tracking only, not betting advice.
+
 ## Switching it on
 
 Set the switch in the runtime's environment to exactly `1` (any other value leaves the step off):
