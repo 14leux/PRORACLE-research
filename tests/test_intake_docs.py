@@ -114,6 +114,22 @@ class IntakeDocsTests(unittest.TestCase):
         self.assertNotIn("fetch(", eli5)  # built from templates and counts: no network, no model call
         self.assertNotRegex(eli5, r"anthropic|vision", )
 
+    def test_a_complete_ticket_means_the_same_in_the_views_the_review_and_the_docs(self) -> None:
+        migrations = ROOT / "supabase" / "migrations"
+        text = (migrations / "20261201000000_proracle_complete_tickets.sql").read_text(encoding="utf-8")
+        for view in ("intake_scoreboard", "intake_recent_window"):
+            self.assertIn(f"create or replace view proracle.{view} with (security_invoker = true)", text, view)
+        self.assertEqual(text.count("having count(*) <> t.fixture_count"), 2)  # both views carry the rule
+        self.assertEqual(text.count("p.arm = 'A')"), 2)
+        self.assertEqual(text.count("p.arm = 'C')"), 2)
+        self.assertIsNone(re.search(r"^\s*(grant|revoke)\b", text, re.M | re.I))  # no privilege change: only definitions are replaced
+        review = (ROOT / "proracle" / "review.py").read_text(encoding="utf-8")
+        self.assertIn("def picks_complete(", review)
+        tickets_doc = (ROOT / "docs" / "TICKETS.md").read_text(encoding="utf-8")
+        for needle in ("exactly one pick per fixture", "`incomplete`", "exits with code 5", "20261201000000_proracle_complete_tickets.sql"):
+            self.assertIn(needle, tickets_doc, needle)
+        self.assertIn("20261201000000_proracle_complete_tickets.sql", DOC)
+
     def test_every_secret_the_function_reads_is_documented_and_none_is_a_literal(self) -> None:
         index = (FUNCTION / "index.ts").read_text(encoding="utf-8")
         names = set(re.findall(r'need\("([A-Z_]+)"\)', index)) | set(re.findall(r'intEnv\("([A-Z_]+)"', index))

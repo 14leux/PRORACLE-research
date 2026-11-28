@@ -105,6 +105,21 @@ def parse_inputs(inputs: Mapping[str, Any]) -> tuple[list[Fixture], list[Pick]]:
     return fixtures, picks
 
 
+def picks_complete(fixtures: Sequence[Fixture], picks: Sequence[Pick]) -> bool:
+    """True when arms A and C, and every arm present, hold exactly one pick for every fixture.
+
+    The ticket's writes are three requests (ticket, fixtures, picks), so a stopped append can leave some arms
+    short. A review is stored once and never redone, so a short set must not be reviewed (IMP-065).
+    """
+    wanted = {f.fixture_id for f in fixtures}
+    by_arm: dict[str, list[str]] = {}
+    for p in picks:
+        by_arm.setdefault(p.arm, []).append(p.fixture_id)
+    if "A" not in by_arm or "C" not in by_arm:
+        return False
+    return all(len(ids) == len(wanted) and set(ids) == wanted for ids in by_arm.values())
+
+
 def due_time(header: Mapping[str, Any], fixtures: Sequence[Fixture], picks_kickoffs: Sequence[datetime]) -> datetime | None:
     """When the review falls due: the stored time, else the latest kickoff plus the wait (older tickets)."""
     stored = _parse_time(header.get("review_due_at"))
@@ -282,7 +297,7 @@ def run_review(
         summary["considered"] += 1
         inputs = store.ticket_review_inputs(ticket_id)
         fixtures, picks = parse_inputs(inputs)
-        if not fixtures or len(fixtures) != int(header["fixture_count"]) or not picks:
+        if not fixtures or len(fixtures) != int(header["fixture_count"]) or not picks_complete(fixtures, picks):
             summary["incomplete"] += 1  # an append that did not finish; it is never scored
             continue
         outcomes = store.current_outcomes([f.fixture_id for f in fixtures])
@@ -339,6 +354,19 @@ def _parse_frozen_after(raw: str | None) -> datetime | None:
 
 
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
+    """Run the review. Any error this module did not expect is reported by its type alone (exit 5).
+
+    This repository's Actions logs are public and a traceback can quote a stored value (an odds string, a
+    name), so nothing but the exception's class name is ever printed (IMP-064).
+    """
+    try:
+        return _main(argv, env)
+    except Exception as error:  # noqa: BLE001 - deliberate: no traceback or message may reach a public log
+        print(f"PRORACLE review stopped: unexpected {type(error).__name__}", file=sys.stderr)
+        return 5
+
+
+def _main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Review screenshot tickets that are settled or 36 hours past their last kickoff.")
     parser.add_argument("--dry-run", action="store_true", help="work out the reviews but send and record nothing")
     parser.add_argument("--frozen-after", default=None, help="only tickets frozen after this time (ISO); else the setting")

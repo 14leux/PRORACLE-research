@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -159,6 +161,64 @@ class DueTests(unittest.TestCase):
         store = FakeReviewStore([t])
         summary, sent, _ = run(store)
         self.assertEqual((summary["incomplete"], summary["sent"], sent), (1, 0, []))
+
+    def _partial(self, keep) -> tuple[dict, list, list]:
+        """A ticket whose fixtures were all written but whose arm picks stopped short (IMP-065)."""
+        t = make_ticket(1)
+        t["inputs"]["picks"] = [p for p in t["inputs"]["picks"] if keep(p)]
+        store = FakeReviewStore([t])
+        store.settle(t, "HHDA")
+        summary, sent, _ = run(store)
+        return summary, sent, store.appended
+
+    def test_a_ticket_with_some_arm_picks_missing_is_incomplete_and_never_reviewed(self) -> None:
+        t0 = make_ticket(1)["fixtures"]
+        cases = {
+            "one pick of arm B missing": lambda p: not (p["arm"] == "B" and p["fixture_id"] == t0[3]),
+            "one pick of arm A missing": lambda p: not (p["arm"] == "A" and p["fixture_id"] == t0[0]),
+            "every pick of arm C missing": lambda p: p["arm"] != "C",
+            "every pick of arm A missing": lambda p: p["arm"] != "A",
+            "one fixture without any pick": lambda p: p["fixture_id"] != t0[2],
+        }
+        for label, keep in cases.items():
+            summary, sent, appended = self._partial(keep)
+            self.assertEqual((summary["incomplete"], summary["reviewed"], sent, appended), (1, 0, [], []), label)
+
+    def test_a_pick_for_a_fixture_not_on_the_ticket_makes_it_incomplete(self) -> None:
+        t = make_ticket(1)
+        extra = dict(t["inputs"]["picks"][0], fixture_id="not-on-this-ticket")
+        t["inputs"]["picks"].append(extra)
+        store = FakeReviewStore([t])
+        store.settle(t, "HHDA")
+        summary, _, _ = run(store)
+        self.assertEqual((summary["incomplete"], summary["reviewed"]), (1, 0))
+
+    def test_a_ticket_with_no_rule_arm_is_complete_and_is_reviewed(self) -> None:
+        summary, sent, appended = self._partial(lambda p: p["arm"] != "B")
+        self.assertEqual((summary["incomplete"], summary["reviewed"], len(appended)), (0, 1, 1))
+        self.assertEqual(len(sent), 1)
+
+    def test_the_right_number_of_picks_for_the_wrong_fixtures_is_incomplete(self) -> None:
+        t = make_ticket(1)
+        first_c = next(p for p in t["inputs"]["picks"] if p["arm"] == "C" and p["fixture_id"] == t["fixtures"][0])
+        first_c["fixture_id"] = "somewhere-else"  # arm C still has four picks, but not for the ticket's fixtures
+        fixtures, picks = rv.parse_inputs(t["inputs"])
+        self.assertFalse(rv.picks_complete(fixtures, picks))
+
+    def test_a_pick_written_twice_for_one_fixture_is_incomplete(self) -> None:
+        t = make_ticket(1)
+        a_first = next(p for p in t["inputs"]["picks"] if p["arm"] == "A" and p["fixture_id"] == t["fixtures"][0])
+        t["inputs"]["picks"].append(dict(a_first))  # every fixture is covered, one of them twice
+        fixtures, picks = rv.parse_inputs(t["inputs"])
+        self.assertFalse(rv.picks_complete(fixtures, picks))
+
+    def test_picks_complete_directly(self) -> None:
+        t = make_ticket(1)
+        fixtures, picks = rv.parse_inputs(t["inputs"])
+        self.assertTrue(rv.picks_complete(fixtures, picks))
+        self.assertFalse(rv.picks_complete(fixtures, []))
+        self.assertFalse(rv.picks_complete(fixtures, picks[1:]))
+        self.assertFalse(rv.picks_complete([], picks))
 
 
 class OnceTests(unittest.TestCase):
@@ -340,6 +400,33 @@ class MainTests(unittest.TestCase):
 
     def test_a_bad_activation_time_is_refused(self) -> None:
         self.assertEqual(rv.main(["--dry-run", "--frozen-after", "soon"], env=self.ENV), 2)
+
+    def test_an_unexpected_error_prints_only_its_type_never_a_traceback_or_its_text(self) -> None:
+        # a public log must not quote a stored value, so nothing but the class name may appear (IMP-064)
+        secret = "odds 2.50 Chelsea FC v Arsenal 9f8e7d6c"
+        for error in (ValueError(secret), KeyError(secret), ZeroDivisionError(secret)):
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(rv, "run_review", side_effect=error), patch("proracle.supabase_adapter.SupabaseRESTStore"):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = rv.main(["--dry-run", "--frozen-after", "2030-01-01T00:00:00Z"], env=self.ENV)
+            self.assertEqual(code, 5, type(error).__name__)
+            self.assertEqual(err.getvalue().strip(), f"PRORACLE review stopped: unexpected {type(error).__name__}")
+            self.assertEqual(out.getvalue(), "")
+            self.assertNotIn("Traceback", err.getvalue() + out.getvalue())
+            self.assertNotIn("Chelsea", err.getvalue() + out.getvalue())
+
+    def test_an_error_before_the_run_starts_is_also_only_a_type(self) -> None:
+        err = io.StringIO()
+        with patch.object(rv, "_parse_frozen_after", side_effect=RuntimeError("Arsenal 2.10")), contextlib.redirect_stderr(err):
+            code = rv.main(["--dry-run"], env=self.ENV)
+        self.assertEqual((code, err.getvalue().strip()), (5, "PRORACLE review stopped: unexpected RuntimeError"))
+
+    def test_the_known_failures_keep_their_own_exit_codes_and_a_bad_option_still_exits(self) -> None:
+        with patch.object(rv, "run_review", side_effect=rv.ReviewError("a safe message")), patch("proracle.supabase_adapter.SupabaseRESTStore"):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(rv.main(["--dry-run"], env=self.ENV), 4)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            rv.main(["--no-such-option"], env=self.ENV)  # argparse's own exit is not swallowed
 
 
 # --- slate scoring -----------------------------------------------------------------------------------
