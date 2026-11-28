@@ -393,15 +393,19 @@ Reply /ticket or /slate within 60 minutes. ...</div>
           <div class="msg bot"><small>Bot (example numbers only)</small>Here is how the picks are doing, in plain words. ...
 
 Simulated tickets:
-- A, the rating model: right 52 of 100 in the last 28 days (52%).
-- B1, your rule v1: right 64 of 100 in the last 28 days (64%).
-  Working: it is ahead of A by 12.0 points on the same 100 matches, more than the ±10 points of noise I allow for.
-- B2, your rule v2: right 3 of 8 in the last 28 days (38%).
-  Too early to tell: only 8 settled picks, and I wait for 20.
+- A, the rating model: last 7 days right 22 of 40 (55%); last 28 days right 52 of 100 (52%).
+- B1, your rule v1: last 7 days right 12 of 15 (80%); last 28 days right 64 of 100 (64%).
+  Last 7 days: Too early to tell: only 15 settled picks, and I wait for 20.
+  Last 28 days: Working: it is ahead of A by 12.0 points on the same 100 matches, more than the ±10 points of noise I allow for.
+  This week differs from the month: too early to tell over 7 days, working over 28 days. The 7-day window has only 15 settled picks.
+
+Tickets that stood out (a ticket's hit rate against the same arm's other tickets of that kind over the last 28 days):
+- Simulated ticket 2026-11-26, C: right 16 of 16 (100%), unusually high against its usual 50% over 3 other tickets (60 picks).
+About 1 ticket in 20 looks like this by chance alone, so read one as a prompt to look, not as a finding.
 
 This is a calibration report card. It is not betting advice.</div>
         </div>
-        <p class="why">The bot says <b>working</b> or <b>dropping</b> only when a player has at least 20 settled picks in the last 28 days and is ahead of or behind A by more than the margin of error. Anything else is "too early to tell". Once some slate games have finished, one extra line says how often the rating model's pick was right on them. It never talks about money.</p>
+        <p class="why">The bot looks at two windows, the <b>last 7 days</b> and the <b>last 28 days</b>, and says whether they agree. It says <b>working</b> or <b>dropping</b> only when a player has at least 20 settled picks in that window and is ahead of or behind A by more than the margin of error. Anything else is "too early to tell". It also points out any <b>ticket</b> that did unusually well or unusually badly compared with the same player's other tickets of that kind (it needs a ticket with 8 settled picks and 3 other tickets with 40 between them, and says "not enough tickets yet" until then). About 1 ticket in 20 will look unusual by luck alone, so treat it as a reason to look, not as a verdict. Once some slate games have finished, one extra line says how often the rating model's pick was right on them. It never talks about money.</p>
       </div>
     </li>
   </ol>
@@ -653,7 +657,7 @@ limit 30;</pre>
       <tr><td><code>/rules</code></td><td>Lists the active rules and anything waiting.</td></tr>
       <tr><td><code>/today</code></td><td>Today's tickets and every player's picks.</td></tr>
       <tr><td><code>/scoreboard</code></td><td>The report card, per ticket kind.</td></tr>
-      <tr><td><code>/eli5</code></td><td>The report card in plain words: working, dropping or too early to tell.</td></tr>
+      <tr><td><code>/eli5</code></td><td>The report card in plain words, over 7 and 28 days: working, dropping or too early to tell, plus any ticket that did unusually well or badly.</td></tr>
       <tr><td>send a PDF or photo</td><td>Say ticket or slate in the caption, or the bot asks which it is and reads nothing yet.</td></tr>
       <tr><td><code>/ticket</code></td><td>Answers "which is this?": read the waiting upload as a ticket (up to 20 fixtures, picks locked before kickoff, reviewed after the games). More than 20 is refused, never cut.</td></tr>
       <tr><td><code>/slate</code></td><td>Answers "which is this?": read the waiting upload as a slate (up to 100 fixtures, for testing the model, nothing locked, off the report card).</td></tr>

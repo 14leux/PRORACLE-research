@@ -13,9 +13,10 @@ import type {
   StoredRead,
   IntakeStore,
   RuleRecord,
-  RecentRow,
   ScoreRow,
   SlateScoreRow,
+  TicketHitRow,
+  WindowRow,
   TicketSummary,
   UpdateKind,
 } from "./store.ts";
@@ -49,7 +50,8 @@ export class FakeStore implements IntakeStore {
   events: string[] = [];
   tickets: TicketSummary[] = [];
   score: ScoreRow[] = [];
-  recent: RecentRow[] = [];
+  windows: WindowRow[] = [];
+  hits: TicketHitRow[] = [];
   slate: SlateScoreRow | null = null;
   failOn: string | null = null;
   touched = 0;
@@ -216,9 +218,14 @@ export class FakeStore implements IntakeStore {
     return Promise.resolve(this.score);
   }
 
-  recentWindow(): Promise<RecentRow[]> {
-    this.guard("recentWindow");
-    return Promise.resolve(this.recent);
+  windowSummary(): Promise<WindowRow[]> {
+    this.guard("windowSummary");
+    return Promise.resolve(this.windows);
+  }
+
+  ticketHits(): Promise<TicketHitRow[]> {
+    this.guard("ticketHits");
+    return Promise.resolve(this.hits);
   }
 
   slateScore(): Promise<SlateScoreRow | null> {

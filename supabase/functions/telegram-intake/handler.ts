@@ -368,19 +368,25 @@ const scoreboard: Route = async (c) => {
   }
 };
 
-/** /eli5: the performance message in plain words, from the scoreboard, the recent-window view and the slate counts. */
+/** /eli5: the performance message in plain words, from the scoreboard, the window summary, the ticket hits and the slate counts. */
 const eli5: Route = async (c) => {
-  const [score, recent] = await Promise.all([c.deps.store.scoreboard(), c.deps.store.recentWindow()]);
-  // The slate line is a bonus: if its view cannot be read, the rest of the message still goes out.
+  const [score, windows] = await Promise.all([c.deps.store.scoreboard(), c.deps.store.windowSummary()]);
+  // The slate line and the ticket check are bonuses: if their views cannot be read, the rest still goes out.
   let slate = null;
-  let slateNote = "";
+  let hits = null;
+  let notes = "";
   try {
     slate = await c.deps.store.slateScore();
   } catch {
-    slateNote = " (slate counts unavailable)";
+    notes += " (slate counts unavailable)";
   }
-  await c.audit("ELI5", "OK", `arms=${new Set(score.map((r) => r.arm_version)).size}${slateNote}`);
-  await c.reply(buildEli5(score, recent, slate));
+  try {
+    hits = await c.deps.store.ticketHits();
+  } catch {
+    notes += " (ticket check unavailable)";
+  }
+  await c.audit("ELI5", "OK", `arms=${new Set(score.map((r) => r.arm_version)).size}${notes}`);
+  await c.reply(buildEli5(score, windows, slate, hits, c.deps.now()));
 };
 
 interface FileRef {
